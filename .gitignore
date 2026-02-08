@@ -1,0 +1,21 @@
+# Keys
+*.pem
+*.key
+
+# Data
+victim/test_data/
+*.cerberus
+cerberus_id.txt
+cerberus_key.bak
+cerberus_log.txt
+
+# Python
+__pycache__/
+*.pyc
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
