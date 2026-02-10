@@ -1,93 +1,105 @@
 # Cerberus Ransomware Simulation 🐕🔥
 
-> **⚠️ DISCALIMER: FOR EDUCATIONAL PURPOSES ONLY. DO NOT USE ON UNAUTHORIZED SYSTEMS.**
-> This project demonstrates advanced malware concepts including C2 infrastructure, cryptography, persistence, and social engineering traits.
+[![Education Only](https://img.shields.io/badge/Purpose-Educational-red.svg?style=flat-square)](#-disclaimer)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg?style=flat-square)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 
-## 🌟 Key Features
+> **⚠️ DISCLAIMER: FOR EDUCATIONAL AND RESEARCH PURPOSES ONLY.**
+> This project is a controlled simulation designed to demonstrate malware mechanics, C2 infrastructure, and defensive concepts. **Unauthorized use on systems you do not own is strictly prohibited and likely illegal.**
 
-### 💀 Payload Capabilities (`ransomware.py`)
+---
 
-- **Industry-Standard Encryption**: Uses **AES-256-GCM** for file encryption and **RSA-2048** to securely transmit the key to the C2 server.
-- **Targeted Destruction**: Encrypts specific file types (`.txt`, `.docx`, `.jpg`, etc.) located in `~/test_data` to ensure safety during testing.
-- **Persistent Infection**:
-  - Survives reboots by installing itself to Registry (Windows) or Autostart (Linux).
-  - Resumes the _same_ victim session ID using a hidden config file (`~/.config/cerberus/cerberus_id.txt`).
-- **Psychological Warfare**:
-  - **Ragebait GUI**: Fake "Close" button that taunts the user ("LOL access denied").
-  - **Voice Threats**: TTS engine announces "System failure imminent" every 30 seconds.
-  - **Fake Exfiltration**: simulated data upload progress bar.
+## 📖 Overview
 
-### 🕸️ Command & Control (`c2_server.py`)
+**Cerberus** is a sophisticated, end-to-end ransomware simulation framework. It demonstrates the lifecycle of a modern cyber-attack, from the initial delivery via a "Trojaned" installer to persistent system lockdown and remote command-and-control (C2) management.
 
-- **Server-Side Doomsday Timer**: The 72-hour countdown is tracked by the server. Even if the victim shuts down their PC, the timer keeps ticking.
-- **Live Dashboard**: View all infected victims, their IP, status, and time remaining.
-- **Remote Commands**:
-  - `+1H` / `-1H`: Adjust timer.
-  - `💀 DOOMSDAY`: Instantly set timer to 1 minute to trigger panic mode.
-  - `RELEASE KEY`: Send decryption key to victim.
+### What is it?
+A full-stack implementation of a ransomware attack:
+- **Attacker Side**: A Flask-based C2 Server with a live dashboard and RSA-based decryption management.
+- **Victim Side**: A multi-stage payload featuring a fake NVIDIA installer, a watchdog monitor, and a high-security encryption engine.
 
-### 📦 Dropper & Builder (`builder.py`)
+---
 
-- **Dynamic Configuration**: The builder automatically injects the C2 Server's IP address and Public Key into the payload.
-- **Stealth Dropper**: `installer.py` mimics an **NVIDIA GeForce Driver Update** (with a convincing fake UI) while silently dropping and executing the ransomware in the background.
+## 🏗️ Technical Architecture
+
+The project is structured into two main workspaces: `attacker` and `victim`.
+
+### 1. The Infection Lifecycle
+```mermaid
+graph TD
+    A[Attacker: Start C2 Server] --> B[Attacker: Generate RSA Keys]
+    B --> C[Attacker: Run builder.py]
+    C --> D[Victim: Executes installer.py]
+    D --> E[Installer: Drops Ransomware & Watchdog]
+    E --> F[Watchdog: Launches & Monitors Payload]
+    F --> G[Ransomware: Encrypts Data & Displays UI]
+    G --> H[Ransomware: Check-in with C2]
+    H --> I[Attacker: View Victim on Dashboard]
+```
+
+### 2. Core Components
+
+#### 🕵️ C2 Server (`attacker/c2_server.py`)
+The "brain" of the operation.
+- **RSA Key Management**: Generates a 2048-bit RSA pair. The Public Key is embedded in the payload, while the Private Key never leaves the server.
+- **Victim Dashboard**: A web interface tracking IP addresses, infection status, and a **Server-Side Doomsday Timer**.
+- **Remote Operations**: Allows the attacker to adjust timers, send custom commands, or release the decryption key once "paid."
+
+#### 📦 Dropper/Installer (`victim/installer.py`)
+A social engineering masterpiece.
+- **The Trojan**: Mimics a legitimate **NVIDIA GeForce Driver Installer**.
+- **Dual Payload**: Silently extracts and drops `ransomware.py` and `watchdog.py` while the user watches a convincing progress bar.
+
+#### 🐕 Watchdog (`victim/watchdog.py`)
+The persistence layer.
+- **Resilience**: Constantly monitors the ransomware process. If the user kills the ransomware task, the watchdog instantly respawns it.
+- **Cleanup Coordination**: Waits for a "stop signal" from the ransomware (triggered by valid decryption) to perform a self-destruct sequence.
+
+#### 💀 Ransomware Payload (`victim/ransomware.py`)
+The main execution engine.
+- **Cryptography**: Uses **AES-256-GCM** for high-speed file encryption. The AES key is unique to the session and is sent to the C2 encrypted with the **RSA-2048** Public Key.
+- **System Lockdown**:
+    - **Focus Enforcement**: Forces the GUI to the top every 50ms.
+    - **Input Blocking**: Disables system shortcuts (Alt+F4, Esc) and steals mouse focus.
+    - **Watchdog Integration**: Automatically installs itself into system startup Registry/Paths.
+- **Psychological Components**:
+    - **Ragebait UI**: Trolls the user with mocking messages on exit attempts.
+    - **Voice Synthesis (TTS)**: Announces threats ("System failure imminent") through the system speakers every 30 seconds.
+
+---
+
+## 🔐 Cryptography Deep-Dive
+
+Cerberus follows industry standards for secure key exchange:
+
+1.  **Preparation**: Attacker generates RSA-2048 keys.
+2.  **Encryption**: On the victim machine, a random **256-bit AES key** is generated. All target files are encrypted using **AES-256-GCM** (authenticated encryption).
+3.  **Key Transport**: The AES key is encrypted using the **Attacker's RSA Public Key**. Even if the victim discovers the encrypted key file, it cannot be decrypted without the Attacker's Private Key.
+4.  **Decryption**: Once the C2 releases the key, the victim receives the AES key, validates it, and reverses the encryption process.
 
 ---
 
 ## 🚀 Setup & Usage
 
-### 1. Start the C2 Server (Attacker Machine)
+### Step 1: Start the C2 (Attacker)
+Go to the `attacker/` directory, install dependencies, and run the server. Note the **Public Key** printed in the console.
 
-```bash
-cd attacker
-pip install -r requirements.txt
-python c2_server.py
-```
+### Step 2: Build the Dropper (Victim/Builder)
+Run `builder.py`. It will ask for the C2 IP and automatically inject the Public Key into a new `installer.py` dropper.
 
-_The server will start on Port 5000. Note your IP address (e.g., `10.0.0.X`)._
+### Step 3: Deployment
+Execute `installer.py` on the target machine. Observe the fake installation progress followed by the system lockdown.
 
-### 2. Build the Payload
-
-On the victim machine (or wherever you want to generate the dropper):
-
-```bash
-cd victim
-python builder.py
-```
-
-- Enter the **C2 Server IP** when prompted (e.g., `10.0.0.X`).
-- This generates `installer.py` (the dropper).
-
-### 3. Infect the Victim
-
-Transfer `installer.py` to the target machine and run it:
-
-```bash
-python installer.py
-```
-
-_Ideally, compile this to an EXE/Binary using PyInstaller for maximum realism._
-
-### 4. The Attack Loop
-
-1.  **Fake Installer**: The NVIDIA installer appears.
-2.  **Silent Drop**: Ransomware is dropped to `~/.config/` or `%APPDATA%`.
-3.  **Lockdown**: The Red/Black Ransomware GUI appears.
-4.  **Check-in**: The victim ID appears on the C2 Dashboard.
-5.  **Offline Mode**: If C2 is down, it falls back to a local "OFFLINE" mode so you can still test the GUI.
-
-### 5. Recovery (Decryption)
-
-1.  Go to the C2 Dashboard: `http://localhost:5000`.
-2.  Find the Victim ID.
-3.  Click **RELEASE KEY**.
-4.  On the victim machine, the status will change to **"Valid Key Received"**.
-5.  Click **DECRYPT FILES**.
-6.  Files are restored, persistence is removed, and the malware cleans itself up.
+### Step 4: Management
+Access the dashboard at `http://[C2_IP]:5000` to manage your victims and release keys.
 
 ---
 
-## 🛠️ Configuration & Troubleshooting
+## 🛡️ Defensive & Safety Measures
 
-- **Target Directory**: Currently set to `~/test_data` for safety. Change `TARGET_DIRECTORY` in `ransomware.py` to target other folders.
-- **Debug Logs**: If the payload fails, check `~/RANSOMWARE_IMPORT_ERROR.txt` or `~/.config/cerberus/cerberus_log.txt`.
-- **Performance**: The Linux "Watchdog" (process killer) is currently **DISABLED** by default to prevent VM freezing. Uncomment `watchdog_loop` in `ransomware.py` to re-enable aggressive process killing.
+To ensure this tool remains a safe educational resource:
+- **Target Restriction**: By default, it ONLY encrypts files in `~/test_data`.
+- **Offline Mode**: If the C2 is unreachable, the UI provides a "local test" path.
+- **Clean Exit**: Successful decryption removes all persistence, watchdog files, and self-deletes the malware code.
+
+---
